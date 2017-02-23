@@ -1,16 +1,31 @@
-# Build Your Own AngularJS
+# Build Your Own AngularJS in ES6
 
-This repository contains the AngularJS implementation built during the course of the book [Build Your Own AngularJS](http://teropa.info/build-your-own-angular), as well as the errata for the book.
+This repo is a port of the brilliant Build Your Own AngularJS code from https://github.com/teropa/build-your-own-angularjs
+using ES6 feature.
 
-## Code
+## Reasons for implementing in ES6
+* Forces me to learn ES6 in the context of a framework
+* More challenging than copying the code directly from the BYOAJS repo
+* Still get to learn the internals of AngularJS (even though I'm a bit late to the party)
 
-To make following along easier, commits are ordered to match the order of events in the book. Each commit message references the corresponding section title in the book. Note that this means the history of this repository may change as the book is revised.
+## Tips for Testing
+When I first started this repo I was implementing the unit tests again in ES6. This was very tedious as I 
+was hoping to get through the book in a few session. My workaround has been to integrate the unit test (ES5)
+code from the main BYOAJS repo with my re-written code in the /src directory. To do this I set teropa's BYOAJS
+repo as a remote (including tags) and can pull in unit-tests on a chapter by chapter basis with the following command:
 
-There is also a tag for each chapter, pointing to the state of the codebase at the end of that chapter.
+```bash
+git checkout tags/<chapter tag> -- test/*
+```
 
-## Errata
+The downside to my laziness in not wanting to modify the test code is that it relies on the CommonJS pattern
+of module loading and I would ideally like to use ES6 modules. The current workaround is to translate the ES6 modules to
+CommonJS but this requires adding the '.default' to each require statement in the ES5 tests (http://www.2ality.com/2015/12/babel-commonjs.html)
+when the module is imported (less than ideal as each test file still needs to be modified slightly).
 
-The [Issues](https://github.com/teropa/build-your-own-angularjs/issues) setion of this repository contains the book's errata. 
-
-If you find bugs, typos, mistakes, or other issues that should be improved, I would love to hear about it. See [CONTRIBUTING.md](CONTRIBUTING.MD).
+## Updates from Original BYOAJS repo
+* Updated to Phantomjs2 headless browser for testing
+* Removed jshint in favour of eslint for automatic linting in VS code
+* Utilized Babel and babel-preset-env to pull in polyfills for ES6 features not supported by PhantomJS (Symbols, etc.)
+* 
 

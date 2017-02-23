@@ -1,7 +1,7 @@
 'use strict';
 
 var _ = require('lodash');
-var Scope = require('../src/scope');
+var Scope = require('../src/scope').default;
 
 describe('Scope', function() {
 

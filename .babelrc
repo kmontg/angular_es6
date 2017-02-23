@@ -1,3 +1,8 @@
 {
-    "presets":["env"]
+    "presets": [
+        ["env", {
+            "modules": "commonjs",
+            "include": ["es6.symbol"]
+        }]
+    ]
 }

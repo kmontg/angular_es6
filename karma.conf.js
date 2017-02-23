@@ -6,10 +6,12 @@ module.exports = function(config) {
       'test/**/*_spec.js'
     ],
     preprocessors: {
-      'test/**/*.js': ['jshint', 'browserify'],
-      'src/**/*.js': ['jshint', 'browserify']
+      'test/**/*.js': ['browserify'],
+      'src/**/*.js': ['browserify']
     },
-    browsers: ['PhantomJS'],
+    browsers: ['PhantomJS2'],
+    reporters: ['progress'],
+    autoWatch: true,
     // when packaging the framework for use test/prod usage this will need to be put in package.json as well
     browserify: {
       debug: true,
