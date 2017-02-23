@@ -10,8 +10,10 @@ module.exports = function(config) {
       'src/**/*.js': ['jshint', 'browserify']
     },
     browsers: ['PhantomJS'],
+    // when packaging the framework for use test/prod usage this will need to be put in package.json as well
     browserify: {
       debug: true,
+      transform: [['babelify', {'comments': false}]],
       bundleDelay: 2000 // Fixes "reload" error messages, YMMV!
     }
   })
