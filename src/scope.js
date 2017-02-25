@@ -106,6 +106,94 @@ export default class Scope {
         };
     }
 
+    $watchCollection(watchFn, listenerFn) {
+        let newValue, oldValue;
+        let changeCount = 0;
+        let oldLength = 0;
+        let veryOldValue;
+        let trackVeryOldValue = (listenerFn.length > 1);
+        let firstRun = true;
+
+        let internalWatchFn = (scope) => {
+            let newLength;
+            newValue = watchFn(scope);
+
+            if (_.isObject(newValue)) {
+                if (this.$$isArrayLike(newValue)) {
+                    if(!_.isArray(oldValue)) {
+                        changeCount++;
+                        oldValue = [];
+                    }
+                    if (newValue.length !== oldValue.length) {
+                        changeCount++;
+                        oldValue.length = newValue.length;
+                    }
+                    _.forEach(newValue, (newItem, i) => {
+                        let bothNaN = _.isNaN(newItem) && _.isNaN(oldValue[i]);
+                        if (!bothNaN && newItem !== oldValue[i]) {
+                            changeCount++;
+                            oldValue[i] = newItem;
+                        }
+                    });
+                } else {
+                    // other object type
+                    if (!_.isObject(oldValue) || this.$$isArrayLike(oldValue)) {
+                        changeCount++;
+                        oldValue = {};
+                        oldLength = 0;
+                    }
+                    newLength = 0;
+                    _.forOwn(newValue, (newVal, key) => {
+                        newLength++;
+                        if (oldValue.hasOwnProperty(key)) {
+                            let bothNaN = _.isNaN(newVal) && _.isNaN(oldValue[key]);
+                            if (!bothNaN && oldValue[key] !== newVal) {
+                                changeCount++;
+                                oldValue[key] = newVal;
+                            }
+                        } else {
+                            changeCount++;
+                            oldLength++;
+                            oldValue[key] = newVal;
+                        }
+                    });
+                    if (oldLength > newLength) {
+                        changeCount++;
+                        _.forOwn(oldValue, (oldVal, key) => {
+                            if (!newValue.hasOwnProperty(key)) {
+                                oldLength--;
+                                delete oldValue[key];
+                            }
+                        });
+                    }
+                }
+            } else {
+                 // check for changes
+                if (!this.$$areEqual(newValue, oldValue, false)) {
+                    changeCount++;
+                }
+                oldValue = newValue;
+            }
+
+            return changeCount;
+        };
+
+        let internalListenerFn = () => {
+            if (firstRun) {
+                listenerFn(newValue, newValue, this);
+                firstRun = false;
+            } else {
+                listenerFn(newValue, veryOldValue, this);
+            }
+            
+            if (trackVeryOldValue) {
+                veryOldValue = _.clone(newValue);
+            }
+        };
+
+        return this.$watch(internalWatchFn, internalListenerFn);
+    }
+
     $digest() {
         let dirty;
         let ttl = 10;
@@ -275,5 +363,14 @@ export default class Scope {
             }
         }
         this.$$watchers = null;
+    }
+
+    $$isArrayLike(obj) {
+        if(_.isNaN(obj) || _.isUndefined(obj)) {
+            return false;
+        } 
+        let length = obj.length;
+        return length === 0 || 
+            (_.isNumber(length) && length > 0 && (length - 1) in obj); //https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/in
     }
 }
