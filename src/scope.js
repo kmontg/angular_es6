@@ -11,6 +11,8 @@ export default class Scope {
         this.$$applyAsyncQueue = [];
         this.$$applyAsyncId = null;
         this.$$postDigestQueue = [];
+        this.$root = this;
+        this.$$children = [];
         this.$$phase = null;
     }
 
@@ -26,7 +28,7 @@ export default class Scope {
             this.$eval(expr);
         } finally {
             this.$clearPhase();
-            this.$digest();
+            this.$root.$digest();
         }
     }
 
@@ -36,7 +38,7 @@ export default class Scope {
         if (!this.$$phase && !this.$$asyncQueue.length) {
             setTimeout(() => {
                 if(this.$$asyncQueue.length) {
-                    this.$digest();
+                    this.$root.$digest();
                 }
             }, 0);
         }
@@ -51,8 +53,8 @@ export default class Scope {
             this.$eval(expr);
         });
         // coalesces many calls to $applyAsync
-        if(this.$$applyAsyncId === null) {
-            this.$$applyAsyncId = setTimeout(() => {
+        if(this.$root.$$applyAsyncId === null) {
+            this.$root.$$applyAsyncId = setTimeout(() => {
                 this.$apply(() => {
                     this.$$flushApplyAsync();
                 });
@@ -68,7 +70,7 @@ export default class Scope {
                 console.error(e);
             } 
         }
-        this.$$applyAsyncId = null;
+        this.$root.$$applyAsyncId = null;
     }
 
     $beginPhase(phase) {
@@ -94,12 +96,12 @@ export default class Scope {
             last: initWatchVal
         };
         this.$$watchers.unshift(watcher);
-        this.$$lastDirtyWatch = null;
+        this.$root.$$lastDirtyWatch = null;
         return () => {
             let index = this.$$watchers.indexOf(watcher);
             if (index >= 0) {
                 this.$$watchers.splice(index, 1);
-                this.$$lastDirtyWatch = null;
+                this.$root.$$lastDirtyWatch = null;
             }
         };
     }
@@ -107,11 +109,11 @@ export default class Scope {
     $digest() {
         let dirty;
         let ttl = 10;
-        this.$$lastDirtyWatch = null;
+        this.$root.$$lastDirtyWatch = null;
         this.$beginPhase('$digest');
 
-        if (this.$$applyAsyncId) {
-            clearTimeout(this.$$applyAsyncId);
+        if (this.$root.$$applyAsyncId) {
+            clearTimeout(this.$root.$$applyAsyncId);
             this.$$flushApplyAsync();
         }
 
@@ -141,31 +143,48 @@ export default class Scope {
         }
     }
 
+    $$everyScope(fn) {
+        // call fn for each child scope and short-circuit if any of them return false
+        if (fn(this)) {
+            return this.$$children.every((child) => {
+                return child.$$everyScope(fn);
+            });
+        } else {
+            return false;
+        }
+    }
+
     $$digestOnce() {
-        let newValue, oldValue, dirty;
-        _.forEachRight(this.$$watchers, (watcher) => {
-            try {
-                if (watcher) {
-                    newValue = watcher.watchFn(this);
-                    oldValue = watcher.last;
-                    if(!this.$$areEqual(newValue, oldValue, watcher.valueEq)) {
-                        // dirty
-                        this.$$lastDirtyWatch = watcher;
-                        watcher.last = (watcher.valueEq ? _.cloneDeep(newValue) : newValue);
-                        watcher.listenerFn(newValue, 
-                            (oldValue === initWatchVal ? newValue : oldValue), 
-                            this);
-                        dirty = true;
-                    } else if (this.$$lastDirtyWatch === watcher) {
-                        // clean short-circuit
-                        return false;
+        let dirty;
+        let continueLoop = true;
+        this.$$everyScope((scope) => {
+            let newValue, oldValue;
+            _.forEachRight(scope.$$watchers, (watcher) => {
+                try {
+                    if (watcher) {
+                        newValue = watcher.watchFn(scope);
+                        oldValue = watcher.last;
+                        if(!scope.$$areEqual(newValue, oldValue, watcher.valueEq)) {
+                            // dirty
+                            scope.$root.$$lastDirtyWatch = watcher;
+                            watcher.last = (watcher.valueEq ? _.cloneDeep(newValue) : newValue);
+                            watcher.listenerFn(newValue, 
+                                (oldValue === initWatchVal ? newValue : oldValue), 
+                                scope);
+                            dirty = true;
+                        } else if (scope.$root.$$lastDirtyWatch === watcher) {
+                            continueLoop = false;
+                            return false; // short-circuit _.forEach
+                        }
                     }
+                } catch (e) {
+                    // too much noise in unit tests
+                    console.error(e);
                 }
-            } catch (e) {
-                // too much noise in unit tests
-                // console.error(e);
-            }
+            });
+            return continueLoop;
         });
+        
         return dirty;
     }
 
@@ -224,5 +243,37 @@ export default class Scope {
                 destroyFunction();
             });
         }
+    }
+
+    $new(isolated, parent) {
+        let child;
+        parent = parent || this;
+        if (isolated) {
+            child = new Scope();
+            child.$root = parent.$root;
+            child.$$asyncQueue = parent.$$asyncQueue;
+            child.$$postDigestQueue = parent.$$postDigestQueue;
+            child.$$applyAsyncQueue = parent.$$applyAsyncQueue;
+        } else {
+            child = Object.create(this);
+        }
+        
+        parent.$$children.push(child);
+        child.$$watchers = [];
+        child.$$children = [];
+        child.$parent = parent;
+        
+        return child;
+    }
+
+    $destroy() {
+        if (this.$parent) {
+            let siblings = this.$parent.$$children;
+            let indexOfThis = siblings.indexOf(this);
+            if (indexOfThis >= 0) {
+                siblings.splice(indexOfThis, 1);
+            }
+        }
+        this.$$watchers = null;
     }
 }
