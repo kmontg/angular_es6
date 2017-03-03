@@ -5,7 +5,6 @@ let ESCAPES = {'n':'\n', 'f':'\f', 'r':'\r', 't':'\t',
 
 class Lexer {
     constructor(text) {
-        // Tokenization will be done here
     }
 
     lex(text) {
@@ -21,7 +20,7 @@ class Lexer {
                 this.readNumber();
             } else if (this.is('\'"')) {
                 this.readString(this.ch);
-            } else if (this.is('[],{}:')) {
+            } else if (this.is('[],{}:.()=')) {
                 this.tokens.push({
                     text: this.ch
                 });
@@ -156,7 +155,9 @@ class AST {
         this.constants = {
             'null': {type: AST.Literal, value: null},
             'true': {type: AST.Literal, value: true},
-            'false': {type: AST.Literal, value: false}
+            'false': {type: AST.Literal, value: false},
+            'this' : {type: AST.ThisExpression},
+            '$locals': {type: AST.LocalsExpression}
         }
     }
 
@@ -166,29 +167,73 @@ class AST {
     }
 
     program() {
-        return {type: AST.Program, body: this.primary()};
+        return {type: AST.Program, body: this.assignment()};
     }
 
     primary() {
+        let primary;
         if (this.expect('[')){
-            return this.arrayDeclaration();
+            primary = this.arrayDeclaration();
         } else if (this.expect('{')) {
-            return this.object();
+            primary =  this.object();
         } else if (this.constants.hasOwnProperty(this.tokens[0].text)) {
-            return this.constants[this.consume().text];
-        } else {
-            return this.constant();
+            primary = this.constants[this.consume().text];
         }
+        else if (this.peek().identifier) {
+            primary = this.identifier();
+        }
+        else {
+            primary = this.constant();
+        }
+
+        let next;
+        while ((next = this.expect('.', '[', '('))) {
+            if (next.text === '[') {
+                primary = {
+                    type: AST.MemberExpression,
+                    object: primary,
+                    property: this.assignment(),
+                    computed: true
+                };
+                this.consume(']');
+            } else if (next.text === '.') {
+                primary = {
+                    type: AST.MemberExpression,
+                    object: primary,
+                    property: this.identifier(),
+                    computed: false
+                };
+            } else if (next.text === '(') {
+                primary = {
+                    type: AST.CallExpression, 
+                    callee: primary,
+                    arguments: this.parseArguments()
+                };
+                this.consume(')');
+            }
+        }
+
+        return primary;
     }
 
     constant() {
         return {type: AST.Literal, value: this.consume().value};
     }
 
-    expect(e) {
-        let token = this.peek(e);
+    expect(e1, e2, e3, e4) {
+        let token = this.peek(e1, e2, e3, e4);
         if (token) {
             return this.tokens.shift();
+        }
+    }
+
+    peek(e1, e2, e3, e4) {
+        if (this.tokens.length > 0) {
+            let text = this.tokens[0].text;
+            if (text === e1 || text === e2 || text === e3 || text === e4 || 
+                (!e1 && !e2 && !e3 && !e4)) {
+                return this.tokens[0];
+            }
         }
     }
 
@@ -199,7 +244,7 @@ class AST {
                 if (this.peek(']')) {
                     break;
                 }
-                elements.push(this.primary());
+                elements.push(this.assignment());
             } while (this.expect(','));
         }
         this.consume(']');
@@ -217,21 +262,12 @@ class AST {
                     property.key = this.constant();
                 }
                 this.consume(':');
-                property.value = this.primary();
+                property.value = this.assignment();
                 properties.push(property);
             } while (this.expect(','));
         }
         this.consume('}');
         return {type: AST.ObjectExpression, properties: properties};
-    }
-
-    peek(e) {
-        if (this.tokens.length > 0) {
-            let text = this.tokens[0].text;
-            if (text === e || !e) {
-                return this.tokens[0];
-            }
-        }
     }
 
     consume(e) {
@@ -245,6 +281,25 @@ class AST {
     identifier() {
         return {type: AST.Identifier, name: this.consume().text};
     }
+
+    parseArguments() {
+        let args = [];
+        if (!this.peek(')')) {
+            do {
+                args.push(this.assignment());
+            } while (this.expect(','));
+        }
+        return args;
+    }
+
+    assignment() {
+        let left = this.primary();
+        if (this.expect('=')) {
+            let right = this.primary();
+            return {type: AST.AssignmentExpression, left: left, right: right};
+        }
+        return left;
+    }
 }
 
 // possibly move to staic get() in AST class
@@ -254,6 +309,11 @@ AST.ArrayExpression = 'ArrayExpression';
 AST.ObjectExpression = 'ObjectExpression';
 AST.Property = 'Property';
 AST.Identifier = 'Identifier';
+AST.ThisExpression = 'ThisExpression';
+AST.MemberExpression = 'MemberExpression';
+AST.LocalsExpression = 'LocalsExpression';
+AST.CallExpression = 'CallExpression';
+AST.AssignmentExpression = 'AssignmentExpression';
 
 class ASTCompiler {
     constructor(astBuilder) {
@@ -263,12 +323,20 @@ class ASTCompiler {
 
     compile(text) {
         let ast = this.astBuilder.ast(text);
-        this.state = {body: []};
+        this.state = {body: [], nextId: 0, vars:[]};
         this.recurse(ast);
-        return new Function(this.state.body.join(''));
+        let fnString = 'var fn=function(s,l){' + 
+                        (this.state.vars.length ?
+                            'var ' + this.state.vars.join(',') + ';' :
+                            ''
+                        ) +
+                        this.state.body.join('') +
+                        '}; return fn;';
+        return new Function('ensureSafeMemberName', 'ensureSafeObject', 'ensureSafeFunction', fnString)(this.ensureSafeMemberName, this.ensureSafeObject, this.ensureSafeFunction);
     }
 
-    recurse(ast) {
+    recurse(ast, context, create) {
+        let intoId;
         switch (ast.type) {
             case AST.Program:
                 this.state.body.push('return ', this.recurse(ast.body), ';');
@@ -289,12 +357,97 @@ class ASTCompiler {
                                     return key + ':' + value;
                                 });
                 return '{' + properties.join(',') + '}';
+            case AST.Identifier:
+                this.ensureSafeMemberName(ast.name);
+                intoId = this.nextId();
+                this.if_(this.getHasOwnProperty('l', ast.name), 
+                    this.assign(intoId, this.nonComputedMember('l', ast.name)));
+                if (create) {
+                    this.if_(this.not(this.getHasOwnProperty('l', ast.name)) +
+                                '&& s &&' +
+                                this.not(this.getHasOwnProperty('s', ast.name)),
+                            this.assign(this.nonComputedMember('s', ast.name), '{}'));
+                }
+                this.if_(this.not(this.getHasOwnProperty('l', ast.name)) + ' && s',
+                    this.assign(intoId, this.nonComputedMember('s', ast.name)));
+                if (context) {
+                    context.context = this.getHasOwnProperty('l', ast.name) + '? l:s';
+                    context.name = ast.name;
+                    context.computed = false;
+                }
+                this.addEnsureSafeObject(intoId);
+                return intoId;
+            case AST.ThisExpression:
+                return 's';
+            case AST.MemberExpression:
+                intoId = this.nextId();
+                let left = this.recurse(ast.object, undefined, create);
+                if (context) {
+                    context.context = left;
+                }
+                if (ast.computed) {
+                    let right = this.recurse(ast.property);
+                    this.addEnsureSafeMemberName(right);
+                    if (create) {
+                        this.if_(this.not(this.computedMember(left, right)),
+                            this.assign(this.computedMember(left, right), '{}'));
+                    }
+                    this.if_(left,
+                        this.assign(intoId, 
+                            'ensureSafeObject(' + this.computedMember(left, right) + ')'));
+                    if (context) {
+                        context.name = right;
+                        context.computed = true;
+                    }
+                } else {
+                    this.ensureSafeMemberName(ast.property.name);
+                    if (create) {
+                        this.if_(this.not(this.nonComputedMember(left, ast.property.name)),
+                            this.assign(this.nonComputedMember(left, ast.property.name), '{}'));
+                    }
+                    this.if_(left,
+                        this.assign(intoId, 
+                            'ensureSafeObject(' + this.nonComputedMember(left, ast.property.name) + ')'));
+                    if (context) {
+                        context.name = ast.property.name;
+                        context.computed = false;
+                    }
+                }
+                return intoId;
+            case AST.LocalsExpression:
+                return 'l';
+            case AST.CallExpression:
+                let callContext = {};
+                let callee = this.recurse(ast.callee, callContext);
+                let args = _.map(ast.arguments, (arg) => {
+                    return 'ensureSafeObject(' + this.recurse(arg) + ')';
+                });
+                if (callContext.name) {
+                    this.addEnsureSafeObject(callContext.context);
+                    if (callContext.computed) {
+                        callee = this.computedMember(callContext.context, callContext.name);
+                    } else {
+                        callee = this.nonComputedMember(callContext.context, callContext.name);
+                    }
+                }
+                this.addEnsureSafeFunction(callee);
+                return `${callee}&&ensureSafeObject(${callee}(${args.join(',')}))`;
+            case AST.AssignmentExpression:
+                let leftContext = {};
+                this.recurse(ast.left, leftContext, true);
+                let leftExpr;
+                if (leftContext.computed) {
+                    leftExpr = this.computedMember(leftContext.context, leftContext.name);
+                } else {
+                    leftExpr = this.nonComputedMember(leftContext.context, leftContext.name);
+                }
+                return this.assign(leftExpr, 
+                    `ensureSafeObject(${this.recurse(ast.right)})`);
         }
     }
 
     escape(value) {
         if (_.isString(value)) {
-            console.log(value);
             return '\'' + 
                 value.replace(this.stringEscapeRegex, this.stringEscapeFn) + 
                 '\'';
@@ -307,6 +460,84 @@ class ASTCompiler {
 
     stringEscapeFn(c) {
         return '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4);
+    }
+
+    nonComputedMember(left, right) {
+        return `(${left}).${right}`;
+    }
+
+    computedMember(left, right) {
+        return `(${left})[${right}]`;
+    }
+
+    if_(test, consequent) {
+        this.state.body.push(`if(${test}){${consequent}}`);
+    }
+
+    not(e) {
+        return `!(${e})`;
+    }
+
+    getHasOwnProperty(object, property) {
+        return `${object} && (${this.escape(property)} in ${object})`;
+    }
+
+    assign(id, value) {
+        return id + '=' + value + ';';
+    }
+
+    nextId() {
+        let id = 'v' + (this.state.nextId++);
+        this.state.vars.push(id);
+        return id;
+    }
+
+    ensureSafeMemberName(name) {
+        if (name === 'constructor' || name === '__proto__' || 
+            name === '__defineGetter__' || name === '__defineSetter__' ||
+            name === '__lookupGetter__' || name === '__lookupSetter__') {
+            throw 'Attempting to access a disallowed field in Angular expressions!';
+         }
+    }
+
+    addEnsureSafeMemberName(expr) {
+        this.state.body.push('ensureSafeMemberName('+expr+');');
+    }
+
+    ensureSafeObject(obj) {
+        if (obj) {
+            if(obj.window === obj) {
+                throw 'Referencing window in Angular expressions is disallowed!';
+            } else if (obj.children &&
+                (obj.nodeName || (obj.prop && obj.attr && obj.find))){
+                throw 'Referencing DOM nodes in Angular expressions is disallowed!';
+            } else if (obj.constructor === obj) {
+                throw 'Referencing Function in Angular expressions is disallowed!';
+            } else if (obj === Object) {
+                throw 'Referencing Object in Angular expressions is disallowed!';
+            }
+            
+        }
+        return obj;
+    }
+
+    addEnsureSafeObject(expr) {
+        this.state.body.push('ensureSafeObject('+expr+');');
+    }
+
+    ensureSafeFunction(obj) {
+        if (obj) {
+            if (obj.constructor === obj) {
+                throw 'Referencing Function in Angular expressions is disallowed!';
+            } else if (obj === Function.prototype.call || obj === Function.prototype.apply || obj === Function.prototype.bind) {
+                throw 'Referencing call, apply or bind in Angular is disallowed!';
+            }
+        }
+        return obj;
+    }
+
+    addEnsureSafeFunction(expr) {
+        this.state.body.push('ensureSafeFunction('+expr+');');
     }
 }
 
