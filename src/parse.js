@@ -3,6 +3,26 @@ import _ from 'lodash';
 let ESCAPES = {'n':'\n', 'f':'\f', 'r':'\r', 't':'\t', 
                 'v': '\v', '\'': '\'', '"': '"'};
 
+let OPERATORS = {
+    '+': true,
+    '!': true,
+    '-': true,
+    '*': true,
+    '/': true,
+    '%': true,
+    '=': true,
+    '==': true,
+    '!=': true,
+    '===': true,
+    '!==': true,
+    '<': true,
+    '>': true,
+    '<=': true,
+    '>=': true,
+    '&&': true,
+    '||': true
+    };
+
 class Lexer {
     constructor(text) {
     }
@@ -20,7 +40,7 @@ class Lexer {
                 this.readNumber();
             } else if (this.is('\'"')) {
                 this.readString(this.ch);
-            } else if (this.is('[],{}:.()=')) {
+            } else if (this.is('[],{}:.()?;')) {
                 this.tokens.push({
                     text: this.ch
                 });
@@ -30,7 +50,19 @@ class Lexer {
             } else if (this.isWhitespace(this.ch)) {
                 this.index++;
             } else {
-                throw `Unexpected next character: ${this.ch}`;
+                let ch = this.ch;
+                let ch2 = this.ch + this.peek();
+                let ch3 = ch2 + this.peek(2);
+                let op = OPERATORS[ch];
+                let op2 = OPERATORS[ch2];
+                let op3 = OPERATORS[ch3];
+                if (op || op2 || op3) {
+                    let token = op3 ? ch3 : (op2 ? ch2 : ch);
+                    this.tokens.push({text: token});
+                    this.index += token.length;
+                } else {
+                    throw `Unexpected next character: ${this.ch}`;
+                }
             }
         }
         return this.tokens;
@@ -112,8 +144,10 @@ class Lexer {
         this.index++;
         let string = '';
         let escape = false;
+        let rawString = quote;
         while (this.index < this.text.length) {
             let ch = this.text.charAt(this.index);
+            rawString += ch;
             if (escape) {
                 if (ch === 'u') {
                     let hex = this.text.substring(this.index + 1, this.index + 5);
@@ -134,7 +168,7 @@ class Lexer {
             } else if (ch === quote) {
                 this.index++;
                 this.tokens.push({
-                    text: string,
+                    text: rawString,
                     value: string
                 });
                 return;
@@ -146,6 +180,13 @@ class Lexer {
             this.index++;
         }
         throw 'Unmatched quote';
+    }
+
+    peek(n) {
+        n = n || 1;
+        return this.index + n < this.text.length ?
+            this.text.charAt(this.index + n) :
+            false;
     }
 }
 
@@ -167,12 +208,23 @@ class AST {
     }
 
     program() {
-        return {type: AST.Program, body: this.assignment()};
+        let body = [];
+        while (true) {
+            if (this.tokens.length) {
+                body.push(this.assignment());
+            }
+            if (!this.expect(';')) {
+                return {type: AST.Program, body: body};
+            }
+        }  
     }
 
     primary() {
         let primary;
-        if (this.expect('[')){
+        if (this.expect('(')) {
+            primary = this.assignment();
+            this.consume(')');
+        } else if (this.expect('[')){
             primary = this.arrayDeclaration();
         } else if (this.expect('{')) {
             primary =  this.object();
@@ -293,12 +345,126 @@ class AST {
     }
 
     assignment() {
-        let left = this.primary();
+        let left = this.ternary();
         if (this.expect('=')) {
-            let right = this.primary();
+            let right = this.ternary();
             return {type: AST.AssignmentExpression, left: left, right: right};
         }
         return left;
+    }
+
+    unary() {
+        let token;
+        if ((token = this.expect('+', '!', '-'))) {
+            return {
+                type: AST.UnaryExpression,
+                operator: token.text,
+                argument: this.unary()
+            };
+        } else {
+            return this.primary();
+        }
+    }
+
+    multiplicative() {
+        let left = this.unary();
+        let token;
+        while ((token = this.expect('*', '/', '%'))) {
+            left = {
+                type: AST.BinaryExpression,
+                left: left,
+                operator: token.text,
+                right: this.unary()
+            };
+        }
+        return left;
+    }
+
+    additive() {
+        let left = this.multiplicative();
+        let token;
+        while ((token = this.expect('+') || (token = this.expect('-')))) {
+            left = {
+                type: AST.BinaryExpression,
+                left: left,
+                operator: token.text,
+                right: this.multiplicative()
+            };
+        }
+        return left;
+    }
+
+    equality() {
+        let left = this.relational();
+        let token;
+        while ((token = this.expect('==', '!=', '===', '!=='))) {
+            left = {
+                type: AST.BinaryExpression,
+                left: left,
+                operator: token.text,
+                right: this.relational()
+            };
+        }
+        return left;
+    }
+
+    relational() {
+        let left = this.additive();
+        let token;
+        while ((token = this.expect('<', '>', '<=', '>='))) {
+            left = {
+                type: AST.BinaryExpression,
+                left: left,
+                operator: token.text,
+                right: this.additive()
+            };
+        }
+        return left;
+    }
+
+    logicalOR() {
+        let left = this.logicalAND();
+        let token;
+        while ((token = this.expect('||'))) {
+            left = {
+                type: AST.LogicalExpression,
+                left: left,
+                operator: token.text,
+                right: this.logicalAND()
+            };
+        }
+        return left;
+    }
+
+    logicalAND() {
+        let left = this.equality();
+        let token;
+        while ((token = this.expect('&&'))) {
+            left = {
+                type: AST.LogicalExpression,
+                left: left,
+                operator: token.text,
+                right: this.equality()
+            };
+        }
+        return left;
+    }
+
+    ternary() {
+        let test = this.logicalOR();
+        if (this.expect('?')) {
+            let consequent = this.assignment();
+            if (this.consume(':')) {
+                let alternate = this.assignment();
+                return {
+                    type: AST.ConditionalExpression,
+                    test: test,
+                    consequent: consequent,
+                    alternate: alternate
+                };
+            }
+        }
+        return test;
     }
 }
 
@@ -314,6 +480,10 @@ AST.MemberExpression = 'MemberExpression';
 AST.LocalsExpression = 'LocalsExpression';
 AST.CallExpression = 'CallExpression';
 AST.AssignmentExpression = 'AssignmentExpression';
+AST.UnaryExpression = 'UnaryExpression';
+AST.BinaryExpression = 'BinaryExpression';
+AST.LogicalExpression = 'LogicalExpression';
+AST.ConditionalExpression = 'ConditionalExpression';
 
 class ASTCompiler {
     constructor(astBuilder) {
@@ -332,15 +502,19 @@ class ASTCompiler {
                         ) +
                         this.state.body.join('') +
                         '}; return fn;';
-        return new Function('ensureSafeMemberName', 'ensureSafeObject', 'ensureSafeFunction', fnString)(this.ensureSafeMemberName, this.ensureSafeObject, this.ensureSafeFunction);
+        return new Function('ensureSafeMemberName', 
+                            'ensureSafeObject', 
+                            'ensureSafeFunction', 
+                            'ifDefined',
+                            fnString)(this.ensureSafeMemberName, 
+                                      this.ensureSafeObject, 
+                                      this.ensureSafeFunction,
+                                      this.ifDefined);
     }
 
     recurse(ast, context, create) {
         let intoId;
         switch (ast.type) {
-            case AST.Program:
-                this.state.body.push('return ', this.recurse(ast.body), ';');
-                break;
             case AST.Literal:
                 return this.escape(ast.value);
             case AST.ArrayExpression:
@@ -443,7 +617,48 @@ class ASTCompiler {
                 }
                 return this.assign(leftExpr, 
                     `ensureSafeObject(${this.recurse(ast.right)})`);
+            case AST.UnaryExpression:
+                return ast.operator + '(' + this._ifDefined(this.recurse(ast.argument), 0) + ')';
+            case AST.BinaryExpression:
+                if (ast.operator === '+' || ast.operator === '-') {
+                    return '(' + this._ifDefined(this.recurse(ast.left), 0) + ')' +
+                        ast.operator +
+                        '(' + this._ifDefined(this.recurse(ast.right), 0) + ')';
+                } else {
+                    return '(' + this.recurse(ast.left) + ')' +
+                        ast.operator + 
+                        '(' + this.recurse(ast.right) + ')';
+                }  
+            case AST.LogicalExpression: 
+                intoId = this.nextId();
+                this.state.body.push(this.assign(intoId, this.recurse(ast.left)));
+                this.if_((ast.operator === '&&' ? intoId: this.not(intoId)),
+                    this.assign(intoId, this.recurse(ast.right)));
+                return intoId;
+            case AST.ConditionalExpression:
+                intoId = this.nextId();
+                let testId = this.nextId();
+                this.state.body.push(this.assign(testId, this.recurse(ast.test)));
+                this.if_(testId,
+                    this.assign(intoId, this.recurse(ast.consequent)));
+                this.if_(this.not(testId),
+                    this.assign(intoId, this.recurse(ast.alternate)));
+                return intoId;
+            case AST.Program:
+                _.forEach(_.initial(ast.body), (stmt) => {
+                    this.state.body.push(this.recurse(stmt), ';');
+                });
+                this.state.body.push('return ', this.recurse(_.last(ast.body)), ';');
+                break;
         }
+    }
+
+    _ifDefined(value, defaultValue) {
+        return 'ifDefined(' + value + ',' + this.escape(defaultValue) + ')';
+    }
+
+    ifDefined(value, defaultValue) {
+        return typeof value === 'undefined' ? defaultValue : value;
     }
 
     escape(value) {
