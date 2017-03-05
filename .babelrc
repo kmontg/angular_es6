@@ -4,5 +4,10 @@
             "modules": "commonjs",
             "include": ["es6.symbol"]
         }]
+    ],
+    "plugins": [
+        ["module-resolver", {
+            "root": ["./src"]
+        }]
     ]
 }
