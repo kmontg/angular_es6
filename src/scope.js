@@ -1,4 +1,5 @@
 import _ from 'lodash';
+import parse from 'parse';
 
 const initWatchVal = Symbol('initWatchVal'); //could possibly use ES7 public class field feature https://tc39.github.io/proposal-class-public-fields/
 
@@ -19,14 +20,14 @@ export default class Scope {
 
     // only executes, does not trigger digest
     $eval(expr, locals) {
-        return expr(this, locals);
+        return parse(expr)(this, locals);
     }
 
     // attempts to $eval and then triggers $digest
     $apply(expr) {
         try {
             this.$beginPhase('$apply');
-            this.$eval(expr);
+            return this.$eval(expr);
         } finally {
             this.$clearPhase();
             this.$root.$digest();
@@ -90,6 +91,10 @@ export default class Scope {
     }
 
     $watch(watchFn, listenerFn, valueEq) {
+        watchFn = parse(watchFn);
+        if (watchFn.$$watchDelegate) {
+            return watchFn.$$watchDelegate(this, listenerFn, valueEq, watchFn);
+        }
         let watcher = {
             watchFn: watchFn,
             listenerFn: listenerFn || function(){ },
@@ -114,6 +119,8 @@ export default class Scope {
         let veryOldValue;
         let trackVeryOldValue = (listenerFn.length > 1);
         let firstRun = true;
+
+        watchFn = parse(watchFn);
 
         let internalWatchFn = (scope) => {
             let newLength;
