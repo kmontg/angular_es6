@@ -601,9 +601,7 @@ describe('Scope', function() {
     });
 
     it('accepts expressions in $apply', function() {
-      scope.aFunction = function() {
-        return 42;
-      };
+      scope.aFunction = _.constant(42);
       expect(scope.$apply('aFunction()')).toBe(42);
     });
 
