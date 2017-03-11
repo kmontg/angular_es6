@@ -1,11 +1,12 @@
 import _ from 'lodash';
-import parse from 'parse';
 
-const initWatchVal = Symbol('initWatchVal'); //could possibly use ES7 public class field feature https://tc39.github.io/proposal-class-public-fields/
+//const initWatchVal = Symbol('initWatchVal'); //could possibly use ES7 public class field feature https://tc39.github.io/proposal-class-public-fields/
 
-export default class Scope {
-    
-    constructor(){
+let initWatchVal = function() { };
+let TTL = 10;
+
+class Scope {    
+    constructor($parse) {
         this.$$watchers = [];
         this.$$lastDirtyWatch = null;
         this.$$asyncQueue = [];
@@ -16,11 +17,12 @@ export default class Scope {
         this.$$children = [];
         this.$$listeners = {};
         this.$$phase = null;
+        this.$parse = $parse;
     }
 
     // only executes, does not trigger digest
     $eval(expr, locals) {
-        return parse(expr)(this, locals);
+        return this.$parse(expr)(this, locals);
     }
 
     // attempts to $eval and then triggers $digest
@@ -91,7 +93,7 @@ export default class Scope {
     }
 
     $watch(watchFn, listenerFn, valueEq) {
-        watchFn = parse(watchFn);
+        watchFn = this.$parse(watchFn);
         if (watchFn.$$watchDelegate) {
             return watchFn.$$watchDelegate(this, listenerFn, valueEq, watchFn);
         }
@@ -120,7 +122,7 @@ export default class Scope {
         let trackVeryOldValue = (listenerFn.length > 1);
         let firstRun = true;
 
-        watchFn = parse(watchFn);
+        watchFn = this.$parse(watchFn);
 
         let internalWatchFn = (scope) => {
             let newLength;
@@ -204,7 +206,7 @@ export default class Scope {
 
     $digest() {
         let dirty;
-        let ttl = 10;
+        let ttl = TTL;
         this.$root.$$lastDirtyWatch = null;
         this.$beginPhase('$digest');
 
@@ -225,7 +227,7 @@ export default class Scope {
             dirty = this.$$digestOnce();
             if ((dirty || this.$$asyncQueue.length) && !(ttl--)) {
                 this.$clearPhase();
-                throw `${ttl} + 'digest iterations reached`;
+                throw `${TTL} + 'digest iterations reached`;
             }
         } while (dirty || this.$$asyncQueue.length);
         this.$clearPhase();
@@ -345,7 +347,7 @@ export default class Scope {
         let child;
         parent = parent || this;
         if (isolated) {
-            child = new Scope();
+            child = new Scope(parent.$parse);
             child.$root = parent.$root;
             child.$$asyncQueue = parent.$$asyncQueue;
             child.$$postDigestQueue = parent.$$postDigestQueue;
@@ -460,4 +462,18 @@ export default class Scope {
         }
         return event;
     }
+}
+
+export default function $RootScopeProvider() {
+    this.$get = ['$parse', function($parse) {
+        let $rootScope = new Scope($parse);
+        return $rootScope;
+    }];
+
+    this.digestTtl = function(value) {
+        if (_.isNumber(value)) {
+            TTL = value;
+        }
+        return TTL;
+    };
 }

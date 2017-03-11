@@ -2,24 +2,27 @@ import _ from 'lodash';
 
 import filterFilter from 'filter_filter';
 
-let filters = {};
+export default function $FilterProvider($provide) {
 
-function register(name, factory) {
-    if (_.isObject(name)) {
-        return _.map(name, function(factory, name) {
-            return register(name, factory);
-        })
-    } else {
-        let filter = factory();
-        filters[name] = filter;
-        return filter;
-    } 
+    let filters = {};
+
+    this.register = function (name, factory) {
+        if (_.isObject(name)) {
+            return _.map(name, (factory, name) => {
+                return this.register(name, factory);
+            });
+        } else {
+            return $provide.factory(name + 'Filter', factory);
+        } 
+    };
+
+    this.$get = ['$injector', function($injector) {
+        return function filter(name) {
+            return $injector.get(name + 'Filter');
+        };
+    }];
+
+    $FilterProvider.$inject = ['$provide'];
+
+    this.register('filter', filterFilter);
 }
-
-function filter(name) {
-    return filters[name];
-}
-
-register('filter', filterFilter);
-
-export {register, filter};

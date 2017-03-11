@@ -1,7 +1,5 @@
 import _ from 'lodash';
 
-import {filter} from 'filter';
-
 let ESCAPES = {'n':'\n', 'f':'\f', 'r':'\r', 't':'\t', 
                 'v': '\v', '\'': '\'', '"': '"'};
 
@@ -507,15 +505,16 @@ AST.ConditionalExpression = 'ConditionalExpression';
 AST.NGValueParameter = "NGValueParameter";
 
 class ASTCompiler {
-    constructor(astBuilder) {
+    constructor(astBuilder, $filter) {
         this.astBuilder = astBuilder;
         this.stringEscapeRegex = /[^a-zA-Z0-9]/g;
+        this.$filter = $filter;
     }
 
     compile(text) {
         let ast = this.astBuilder.ast(text);
         let extra = '';
-        this.markConstantAndWatchExpressions(ast);
+        this.markConstantAndWatchExpressions(ast, this.$filter);
         this.state = {
                 nextId: 0, 
                 fn: {body:[], vars:[]}, 
@@ -567,7 +566,7 @@ class ASTCompiler {
                                       this.ensureSafeObject, 
                                       this.ensureSafeFunction,
                                       this.ifDefined,
-                                      filter);
+                                      this.$filter);
         fn.literal = this.isLiteral(ast);
         fn.constant = ast.constant;
         return fn;
@@ -864,14 +863,14 @@ class ASTCompiler {
             );
     }
 
-    markConstantAndWatchExpressions(ast) {
+    markConstantAndWatchExpressions(ast, $filter) {
         let allConstants;
         let argsToWatch;
         switch (ast.type) {
             case AST.Program:
                 allConstants = true;
                 _.forEach(ast.body, (expr) => {
-                    this.markConstantAndWatchExpressions(expr);
+                    this.markConstantAndWatchExpressions(expr, $filter);
                     allConstants = allConstants && expr.constant;
                 });
                 ast.constant = allConstants;
@@ -888,7 +887,7 @@ class ASTCompiler {
                 allConstants = true;
                 argsToWatch = [];
                 _.forEach(ast.elements, (element) => {
-                    this.markConstantAndWatchExpressions(element);
+                    this.markConstantAndWatchExpressions(element, $filter);
                     allConstants = allConstants && element.constant;
                     if (!element.constant) {
                         argsToWatch.push.apply(argsToWatch, element.toWatch);
@@ -901,7 +900,7 @@ class ASTCompiler {
                 allConstants = true;
                 argsToWatch = [];
                 _.forEach(ast.properties, (property) => {
-                    this.markConstantAndWatchExpressions(property.value);
+                    this.markConstantAndWatchExpressions(property.value, $filter);
                     allConstants = allConstants && property.value.constant;
                     if (!property.value.constant) {
                         argsToWatch.push.apply(argsToWatch, property.value.toWatch);
@@ -916,20 +915,20 @@ class ASTCompiler {
                 ast.toWatch = [];
                 break;
             case AST.MemberExpression:
-                this.markConstantAndWatchExpressions(ast.object);
+                this.markConstantAndWatchExpressions(ast.object, $filter);
                 if (ast.computed) {
-                    this.markConstantAndWatchExpressions(ast.property);
+                    this.markConstantAndWatchExpressions(ast.property, $filter);
                 }
                 ast.constant = ast.object.constant &&
                                 (!ast.computed || ast.property.constant);
                 ast.toWatch = [ast];
                 break;
             case AST.CallExpression:
-                let stateless = ast.filter && !filter(ast.callee.name).$stateful;
+                let stateless = ast.filter && !$filter(ast.callee.name).$stateful;
                 allConstants = stateless ? true : false;
                 argsToWatch = [];
                 _.forEach(ast.arguments, (arg) => {
-                    this.markConstantAndWatchExpressions(arg);
+                    this.markConstantAndWatchExpressions(arg, $filter);
                     allConstants = allConstants && arg.constant;
                     if (!arg.constant) {
                         argsToWatch.push.apply(argsToWatch, arg.toWatch);
@@ -939,32 +938,32 @@ class ASTCompiler {
                 ast.toWatch = stateless ? argsToWatch : [ast];
                 break;
             case AST.AssignmentExpression: 
-                this.markConstantAndWatchExpressions(ast.left);
-                this.markConstantAndWatchExpressions(ast.right);
+                this.markConstantAndWatchExpressions(ast.left, $filter);
+                this.markConstantAndWatchExpressions(ast.right, $filter);
                 ast.constant = ast.left.constant && ast.right.constant;
                 ast.toWatch = [ast];
                 break;
             case AST.UnaryExpression:
-                this.markConstantAndWatchExpressions(ast.argument);
+                this.markConstantAndWatchExpressions(ast.argument, $filter);
                 ast.constant = ast.argument.constant;
                 ast.toWatch = ast.argument.toWatch;
                 break;
             case AST.BinaryExpression:
-                this.markConstantAndWatchExpressions(ast.left);
-                this.markConstantAndWatchExpressions(ast.right);
+                this.markConstantAndWatchExpressions(ast.left, $filter);
+                this.markConstantAndWatchExpressions(ast.right, $filter);
                 ast.constant = ast.left.constant && ast.right.constant;
                 ast.toWatch = ast.left.toWatch.concat(ast.right.toWatch);
                 break;
             case AST.LogicalExpression:
-                this.markConstantAndWatchExpressions(ast.left);
-                this.markConstantAndWatchExpressions(ast.right);
+                this.markConstantAndWatchExpressions(ast.left, $filter);
+                this.markConstantAndWatchExpressions(ast.right, $filter);
                 ast.constant = ast.left.constant && ast.right.constant;
                 ast.toWatch = [ast]
                 break;
             case AST.ConditionalExpression:
-                this.markConstantAndWatchExpressions(ast.test);
-                this.markConstantAndWatchExpressions(ast.consequent);
-                this.markConstantAndWatchExpressions(ast.alternate);
+                this.markConstantAndWatchExpressions(ast.test, $filter);
+                this.markConstantAndWatchExpressions(ast.consequent, $filter);
+                this.markConstantAndWatchExpressions(ast.alternate, $filter);
                 ast.constant = ast.test.constant && ast.consequent.constant && ast.alternate.constant;
                 ast.toWatch = [ast];
                 break;
@@ -1014,10 +1013,10 @@ class ASTCompiler {
 }
 
 class Parser {
-    constructor(lexer) {
+    constructor(lexer, $filter) {
         this.lexer = lexer;
         this.ast = new AST(this.lexer);
-        this.astCompiler = new ASTCompiler(this.ast);
+        this.astCompiler = new ASTCompiler(this.ast, $filter);
     }
 
     parse(text) {
@@ -1025,33 +1024,34 @@ class Parser {
     }
 }
 
-let parse = function(expr) {
-    switch (typeof expr) {
-        case 'string': 
-            let lexer = new Lexer();
-            let parser = new Parser(lexer);
-            let oneTime = false;
-            if (expr.charAt(0) === ':' && expr.charAt(1) === ':') {
-                oneTime = true;
-                expr = expr.substring(2);
+export default function $ParseProvider() {
+    this.$get = ['$filter', function($filter) {
+        return function(expr) {
+            switch (typeof expr) {
+                case 'string': 
+                    let lexer = new Lexer();
+                    let parser = new Parser(lexer, $filter);
+                    let oneTime = false;
+                    if (expr.charAt(0) === ':' && expr.charAt(1) === ':') {
+                        oneTime = true;
+                        expr = expr.substring(2);
+                    }
+                    let parseFn = parser.parse(expr);
+                    if (parseFn.constant) {
+                        parseFn.$$watchDelegate = constantWatchDelegate;
+                    } else if (oneTime) {
+                        parseFn.$$watchDelegate = parseFn.literal ? oneTimeLiteralWatchDelegate : oneTimeWatchDelegate;
+                    } else if (parseFn.inputs) {
+                        parseFn.$$watchDelegate = inputsWatchDelegate;
+                    }
+                    return parseFn;
+                case 'function':
+                    return expr;
+                default:
+                    return _.noop;
             }
-            let parseFn = parser.parse(expr);
-            if (parseFn.constant) {
-                parseFn.$$watchDelegate = constantWatchDelegate;
-            } else if (oneTime) {
-                parseFn.$$watchDelegate = parseFn.literal ? oneTimeLiteralWatchDelegate : oneTimeWatchDelegate;
-            } else if (parseFn.inputs) {
-                parseFn.$$watchDelegate = inputsWatchDelegate;
-            }
-            return parseFn;
-        case 'function':
-            return expr;
-        default:
-            return _.noop;
-    }
-    let lexer = new Lexer();
-    let parser = new Parser(lexer);  
-    return parser.parse(expr); 
+        };
+    }];
 }
 
 function constantWatchDelegate(scope, listenerFn, valueEq, watchFn) {
@@ -1148,5 +1148,3 @@ function expressionInputDirtyCheck(newValue, oldValue) {
         (typeof newValue === 'number' && typeof oldValue === 'number' &&
             _.isNaN(newValue) && _.isNaN(oldValue));
 }
-
-export default parse;

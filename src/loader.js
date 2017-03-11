@@ -5,19 +5,43 @@ export default function setupModuleLoader(window) {
     
     let angular = ensure(window, 'angular', Object);
 
-    let createModule = function(name, requires, modules) {
+    let createModule = function(name, requires, modules, configFn) {
         if (name === 'hasOwnProperty') {
             throw 'hasOwnProperty is not a valid module name';
         }
+        let invokeLater = function(service, method, arrayMethod, queue) {
+            return function(...args) {
+                queue = queue || invokeQueue;
+                queue[arrayMethod || 'push']([service, method, args]);
+                return moduleInstance;
+            };
+        };
         let invokeQueue = [];
+        let configBlocks = [];
         let moduleInstance = {
             name: name,
             requires: requires,
-            constant: function(key, value) {
-                invokeQueue.push(['constant', [key, value]]);
+            constant: invokeLater('$provide', 'constant', 'unshift'),
+            provider: invokeLater('$provide', 'provider'),
+            factory: invokeLater('$provide', 'factory'),
+            value: invokeLater('$provide', 'value'),
+            service: invokeLater('$provide', 'service'),
+            decorator: invokeLater('$provide', 'decorator'),
+            filter: invokeLater('$filterProvider', 'register'),
+            config: invokeLater('$injector', 'invoke', 'push', configBlocks),
+            run: function(fn) {
+                moduleInstance._runBlocks.push(fn);
+                return moduleInstance;
             },
-            _invokeQueue: invokeQueue
+            _invokeQueue: invokeQueue,
+            _configBlocks: configBlocks,
+            _runBlocks: []
         };
+
+        if (configFn) {
+            moduleInstance.config(configFn);
+        }
+
         modules[name] = moduleInstance;
         return moduleInstance;
     };
@@ -32,9 +56,9 @@ export default function setupModuleLoader(window) {
 
     ensure(angular, 'module', function() {
         let modules = {};
-        return function(name, requires) {
+        return function(name, requires, configFn) {
             if (requires) {
-                return createModule(name, requires, modules);
+                return createModule(name, requires, modules, configFn);
             } else {
                 return getModule(name, modules);
             }
