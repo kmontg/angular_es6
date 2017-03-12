@@ -4,6 +4,8 @@ import filter from 'filter';
 import parse from 'parse';
 import scope from 'scope';
 import {$QProvider, $$QProvider} from 'q';
+import {$HttpProvider, $HttpParamSerializerJQLikeProvider, $HttpParamSerializerProvider} from 'http';
+import httpBackend from 'http_backend';
 
 export default function publishExternalAPI() {
     setupModuleLoader(window);
@@ -14,4 +16,8 @@ export default function publishExternalAPI() {
     ngModule.provider('$rootScope', scope);
     ngModule.provider('$q', $QProvider);
     ngModule.provider('$$q', $$QProvider);
+    ngModule.provider('$httpBackend', httpBackend);
+    ngModule.provider('$http', $HttpProvider);
+    ngModule.provider('$httpParamSerializer', $HttpParamSerializerProvider);
+    ngModule.provider('$httpParamSerializerJQLike', $HttpParamSerializerJQLikeProvider);
 }
