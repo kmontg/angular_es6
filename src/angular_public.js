@@ -9,6 +9,7 @@ import httpBackend from 'http_backend';
 import compile from 'compile';
 import controller from 'controller';
 import ngController from 'directives/ng_controller';
+import ngTransclude from 'directives/ng_transclude';
 
 export default function publishExternalAPI() {
     setupModuleLoader(window);
@@ -26,4 +27,5 @@ export default function publishExternalAPI() {
     ngModule.provider('$compile', compile);
     ngModule.provider('$controller', controller);
     ngModule.directive('ngController', ngController);
+    ngModule.directive('ngTransclude', ngTransclude);
 }

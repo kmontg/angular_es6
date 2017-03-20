@@ -197,27 +197,44 @@ export default function $CompileProvider($provide) {
             }
         }
 
-        function compile($compileNodes) {
-            let compositeLinkFn = compileNodes($compileNodes);
-            return function publicLinkFn(scope) {
-                $compileNodes.data('$scope', scope);
-                compositeLinkFn(scope, $compileNodes);
+        function compile($compileNodes, maxPriority) {
+            let compositeLinkFn = compileNodes($compileNodes, maxPriority);
+            return function publicLinkFn(scope, cloneAttachFn, options) {
+                options = options || {};
+                let parentBoundTranscludeFn = options.parentBoundTranscludeFn;
+                let transcludeControllers = options.transcludeControllers;
+                if (parentBoundTranscludeFn && parentBoundTranscludeFn.$$boundTransclude) {
+                    parentBoundTranscludeFn = parentBoundTranscludeFn.$$boundTransclude;
+                }
+                let $linkNodes;
+                if (cloneAttachFn) {
+                    $linkNodes = $compileNodes.clone();
+                    cloneAttachFn($linkNodes, scope);
+                } else {
+                    $linkNodes = $compileNodes;
+                }
+                _.forEach(transcludeControllers, (controller, name) => {
+                    $linkNodes.data('$' + name + 'Controller', controller.instance);
+                })
+                $linkNodes.data('$scope', scope);
+                compositeLinkFn(scope, $linkNodes, parentBoundTranscludeFn);
+                return $linkNodes;
             };
         }
 
-        function compileNodes($compileNodes) {
+        function compileNodes($compileNodes, maxPriority) {
             let linkFns = [];
-            _.forEach($compileNodes, (node, i) => {
-                let attrs = new Attribtues($(node));
-                let directives = collectDirectives(node, attrs);
+            _.times($compileNodes.length, (i) => {
+                let attrs = new Attribtues($($compileNodes[i]));
+                let directives = collectDirectives($compileNodes[i], attrs, maxPriority);
                 let nodeLinkFn;
                 if (directives.length) {
-                    nodeLinkFn = applyDirectivesToNode(directives, node, attrs);
+                    nodeLinkFn = applyDirectivesToNode(directives, $compileNodes[i], attrs);
                 }
                 let childLinkFn;
                 if ((!nodeLinkFn || !nodeLinkFn.terminal) &&
-                    node.childNodes && node.childNodes.length) {
-                    childLinkFn = compileNodes(node.childNodes);
+                    $compileNodes[i].childNodes && $compileNodes[i].childNodes.length) {
+                    childLinkFn = compileNodes($compileNodes[i].childNodes);
                 }
                 if (nodeLinkFn && nodeLinkFn.scope) {
                     attrs.$$element.addClass('ng-scope');
@@ -231,7 +248,7 @@ export default function $CompileProvider($provide) {
                 }
             });
 
-            function compositeLinkFn(scope, linkNodes) {
+            function compositeLinkFn(scope, linkNodes, parentBoundTranscludeFn) {
                 let stableNodeList = [];
                 _.forEach(linkFns, (linkFn) => {
                     let nodeIdx = linkFn.idx;
@@ -240,19 +257,37 @@ export default function $CompileProvider($provide) {
                 _.forEach(linkFns, (linkFn) => {
                     let node = stableNodeList[linkFn.idx];
                     if (linkFn.nodeLinkFn) {
+                        let childScope;
                         if (linkFn.nodeLinkFn.scope) {
-                            scope = scope.$new();
-                            $(node).data('$scope', scope);
+                            childScope = scope.$new();
+                            $(node).data('$scope', childScope);
+                        } else {
+                            childScope = scope;
+                        }
+                        let boundTranscludeFn;
+                        if (linkFn.nodeLinkFn.transcludeOnThisElement) {
+                            boundTranscludeFn = function(transcludedScope, cloneAttachFn, transcludeControllers, containingScope) {
+                                if (!transcludedScope) {
+                                    transcludedScope = scope.$new(false, containingScope);
+                                }
+                                return linkFn.nodeLinkFn.transclude(transcludedScope, cloneAttachFn, {
+                                    transcludeControllers: transcludeControllers
+                                });
+                            };
+                        } else if (parentBoundTranscludeFn) {
+                            boundTranscludeFn = parentBoundTranscludeFn;
                         }
                         linkFn.nodeLinkFn(
                             linkFn.childLinkFn,
-                            scope, 
-                            node
+                            childScope, 
+                            node,
+                            boundTranscludeFn
                         );
                     } else {
                         linkFn.childLinkFn(
                             scope,
-                            node.childNodes
+                            node.childNodes,
+                            parentBoundTranscludeFn
                         );
                     }
                 });
@@ -338,6 +373,9 @@ export default function $CompileProvider($provide) {
             let newIsolateScopeDirective = previousCompileContext.newIsolateScopeDirective;
             let controllerDirectives = previousCompileContext.controllerDirectives;
             let templateDirective = previousCompileContext.templateDirective;
+            let childTranscludeFn;
+            let hasTranscludeDirective = previousCompileContext.hasTranscludeDirective;
+            let hasElementTranscludeDirective;
 
             function getControllers(require, $element) {
                 if (_.isArray(require)) {
@@ -405,7 +443,10 @@ export default function $CompileProvider($provide) {
                 let derivedSyncDirective = _.extend(
                     {},
                     origAsyncDirective,
-                    {templateUrl: null}
+                    {
+                        templateUrl: null,
+                        transclude:null
+                    }
                 );
                 let templateUrl = _.isFunction(origAsyncDirective.templateUrl) ? 
                                     origAsyncDirective.templateUrl($compileNode, attrs) : 
@@ -422,22 +463,23 @@ export default function $CompileProvider($provide) {
                         afterTemplateNodeLinkFn(
                             afterTemplateChildLinkFn,
                             linkCall.scope,
-                            linkCall.linkNode
+                            linkCall.linkNode,
+                            linkCall.boundTranscludeFn
                         );
                     });
                     linkQueue = null;
                 });
 
-                return function delayedNodeLinkFn(_ignoreChildLinkFn, scope, linkNode) {
+                return function delayedNodeLinkFn(_ignoreChildLinkFn, scope, linkNode, boundTranscludeFn) {
                     if (linkQueue) {
-                        linkQueue.push({scope: scope, linkNode: linkNode});
+                        linkQueue.push({scope: scope, linkNode: linkNode, boundTranscludeFn: boundTranscludeFn});
                     } else {
-                     afterTemplateNodeLinkFn(afterTemplateChildLinkFn, scope, linkNode);
+                     afterTemplateNodeLinkFn(afterTemplateChildLinkFn, scope, linkNode, boundTranscludeFn);
                     }
                 }
             }
 
-            function nodeLinkFn(childLinkFn, scope, linkNode) {
+            function nodeLinkFn(childLinkFn, scope, linkNode, boundTranscludeFn) {
                 let $element = $(linkNode);
                 let isolateScope;
 
@@ -452,6 +494,7 @@ export default function $CompileProvider($provide) {
                         let locals = {
                             $scope: directive === newIsolateScopeDirective ? isolateScope : scope,
                             $element: $element,
+                            $transclude: scopeBoundTranscludeFn,
                             $attrs: attrs
                         };
                         let controllerName = directive.controller;
@@ -497,12 +540,27 @@ export default function $CompileProvider($provide) {
                             _.assign(controller, requiredControllers);
                         }
                 });
+
+                function scopeBoundTranscludeFn(transcludedScope, cloneAttachFn) {
+                    let transcludeControllers;
+                    if (!transcludedScope || !transcludedScope.$watch || !transcludedScope.$evalAsync) {
+                        cloneAttachFn = transcludedScope;
+                        transcludedScope = undefined;
+                    }
+                    if (hasElementTranscludeDirective) {
+                        transcludeControllers = controllers;
+                    }
+                    return boundTranscludeFn(transcludedScope, cloneAttachFn, transcludeControllers, scope);
+                }
+                scopeBoundTranscludeFn.$$boundTransclude = boundTranscludeFn;
+
                 _.forEach(preLinkFns, (linkFn) => {
                     linkFn(
                         linkFn.isolateScope ? isolateScope : scope, 
                         $element, 
                         attrs,
-                        linkFn.require && getControllers(linkFn.require, $element)
+                        linkFn.require && getControllers(linkFn.require, $element),
+                        scopeBoundTranscludeFn
                     );
                 });
                 if (childLinkFn) {
@@ -512,14 +570,15 @@ export default function $CompileProvider($provide) {
                         newIsolateScopeDirective.templateUrl === null)) {
                         scopeToChild = isolateScope;
                     }
-                    childLinkFn(scopeToChild, linkNode.childNodes);
+                    childLinkFn(scopeToChild, linkNode.childNodes, boundTranscludeFn);
                 }
                 _.forEachRight(postLinkFns, (linkFn) => {
                     linkFn(
                         linkFn.isolateScope ? isolateScope : scope, 
                         $element, 
                         attrs,
-                        linkFn.require && getControllers(linkFn.require, $element)
+                        linkFn.require && getControllers(linkFn.require, $element),
+                        scopeBoundTranscludeFn
                     );
                 });
             }
@@ -552,6 +611,24 @@ export default function $CompileProvider($provide) {
                     controllerDirectives = controllerDirectives || {};
                     controllerDirectives[directive.name] = directive;
                 }
+                if (directive.transclude) {
+                    if (hasTranscludeDirective) {
+                        throw 'Multiple directives asking for transclude';
+                    }
+                    hasTranscludeDirective = true;
+                    if (directive.transclude === 'element') {
+                        hasElementTranscludeDirective = true;
+                        let $originalCompileNode = $compileNode;
+                        $compileNode = attrs.$$element = $(document.createComment(' ' + directive.name + ': ' + attrs[directive.name] + ' '));
+                        $originalCompileNode.replaceWith($compileNode);
+                        terminalPriority = directive.priority;
+                        childTranscludeFn = compile($originalCompileNode, terminalPriority);
+                    } else {
+                        let $transcludedNodes = $compileNode.clone().contents();
+                        childTranscludeFn = compile($transcludedNodes);
+                        $compileNode.empty();
+                    }      
+                }
                 if (directive.template) {
                     if (templateDirective) {
                         throw 'Multiple directives asking for template';
@@ -577,7 +654,8 @@ export default function $CompileProvider($provide) {
                             preLinkFns: preLinkFns,
                             postLinkFns: postLinkFns,
                             newIsolateScopeDirective: newIsolateScopeDirective,
-                            controllerDirectives: controllerDirectives
+                            controllerDirectives: controllerDirectives,
+                            hasTranscludeDirective: hasTranscludeDirective
                         }
                     );
                     return false;
@@ -597,15 +675,17 @@ export default function $CompileProvider($provide) {
 
             nodeLinkFn.terminal = terminal;
             nodeLinkFn.scope = newScopeDirective && newScopeDirective.scope;
+            nodeLinkFn.transcludeOnThisElement = hasTranscludeDirective;
+            nodeLinkFn.transclude = childTranscludeFn;
             return nodeLinkFn;
         }
 
-        function collectDirectives(node, attrs) {
+        function collectDirectives(node, attrs, maxPriority) {
             let directives = [];
             let match;
             if (node.nodeType === Node.ELEMENT_NODE) {
                 let normalizedNodeName = directiveNormalize(nodeName(node).toLowerCase());
-                addDirective(directives, normalizedNodeName, 'E');
+                addDirective(directives, normalizedNodeName, 'E', maxPriority);
                 _.forEach(node.attributes, (attr) => {
                     let attrStartName, attrEndName;
                     let name = attr.name;
@@ -628,7 +708,7 @@ export default function $CompileProvider($provide) {
                         }
                     }
                     normalizedAttrName = directiveNormalize(name.toLowerCase());
-                    addDirective(directives, normalizedAttrName, 'A', 
+                    addDirective(directives, normalizedAttrName, 'A', maxPriority,
                         attrStartName, attrEndName);
                     if (isNgAttr || !attrs.hasOwnProperty(normalizedAttrName)) {
                         attrs[normalizedAttrName] = attr.value.trim();
@@ -642,7 +722,7 @@ export default function $CompileProvider($provide) {
                 if (_.isString(className) && !_.isEmpty(className)) {
                     while ((match = /([\d\w\-_]+)(?:\:([^;]+))?;?/.exec(className))) {
                         let normalizedClassName = directiveNormalize(match[1]);
-                        if (addDirective(directives, normalizedClassName, 'C')) {
+                        if (addDirective(directives, normalizedClassName, 'C', maxPriority)) {
                             attrs[normalizedClassName] = match[2] ? match[2].trim() : undefined;
                         }
                         className = className.substr(match.index + match[0].length);
@@ -652,7 +732,7 @@ export default function $CompileProvider($provide) {
                 match = /^\s*directive\:\s*([\d\w\-_]+)\s*(.*)$/.exec(node.nodeValue);
                 if (match) {
                     let normalizedName = directiveNormalize(match[1]);
-                    if (addDirective(directives, directiveNormalize(match[1]), 'M')) {
+                    if (addDirective(directives, directiveNormalize(match[1]), 'M', maxPriority)) {
                         attrs[normalizedName] = match[2] ? match[2].trim() : undefined;
                     }
                     
@@ -662,12 +742,12 @@ export default function $CompileProvider($provide) {
             return directives;
         }
 
-        function addDirective(directives, name, mode, attrStartName, attrEndName) {
+        function addDirective(directives, name, mode, maxPriority, attrStartName, attrEndName) {
             let match;
             if (hasDirectives.hasOwnProperty(name)) {
                 let foundDirectives = $injector.get(name + 'Directive');
                 let applicableDirectives = _.filter(foundDirectives, (dir) => {
-                    return dir.restrict.indexOf(mode) !== -1;
+                    return (maxPriority === undefined || maxPriority > dir.priority) && dir.restrict.indexOf(mode) !== -1;
                 });
                 _.forEach(applicableDirectives, (directive) => {
                     if (attrStartName) {
@@ -713,9 +793,9 @@ export default function $CompileProvider($provide) {
         }
 
         function groupElementsLinkFnWrapper(linkFn, attrStart, attrEnd) {
-            return function(scope, element, attrs, ctrl) {
+            return function(scope, element, attrs, ctrl, transclude) {
                 let group = groupScan(element[0], attrStart, attrEnd);
-                return linkFn(scope, group, attrs, ctrl);
+                return linkFn(scope, group, attrs, ctrl, transclude);
             };
         }
 
