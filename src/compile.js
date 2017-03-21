@@ -121,7 +121,15 @@ export default function $CompileProvider($provide) {
         
     };
     
-    this.$get = ['$injector', '$rootScope', '$parse', '$controller', '$http', function($injector, $rootScope, $parse, $controller, $http) {
+    this.$get = ['$injector', '$rootScope', '$parse', '$controller', '$http', '$interpolate', function($injector, $rootScope, $parse, $controller, $http, $interpolate) {
+
+        let startSymbol = $interpolate.startSymbol();
+        let endSymbol = $interpolate.endSymbol();
+        let denormalizeTemplate = (startSymbol === '{{' && endSymbol === '}}') ?
+            _.identity :
+            function(template) {
+                return template.replace(/\{\{/g, startSymbol).replace(/\}\}/g, endSymbol);
+            }
 
         class Attribtues {
             constructor(element) {
@@ -165,7 +173,9 @@ export default function $CompileProvider($provide) {
                 this.$$observers[key] = this.$$observers[key] || [];
                 this.$$observers[key].push(fn);
                 $rootScope.$evalAsync(() => {
-                    fn(this[key]);
+                    if (!this.$$observers[key].$$inter) {
+                        fn(this[key]);
+                    } 
                 });
                 return () => {
                     let index = this.$$observers[key].indexOf(fn);
@@ -307,7 +317,7 @@ export default function $CompileProvider($provide) {
                             destination[scopeName] = newAttrValue;
                         });
                         if (attrs[attrName]) {
-                            destination[scopeName] = attrs[attrName];
+                            destination[scopeName] = $interpolate(attrs[attrName])(scope);
                         }
                         break;
                     case '<':
@@ -455,6 +465,7 @@ export default function $CompileProvider($provide) {
                 let linkQueue = [];
                 $compileNode.empty();
                 $http.get(templateUrl).success((template) => {
+                    template = denormalizeTemplate(template);
                     directives.unshift(derivedSyncDirective);
                     $compileNode.html(template);
                     afterTemplateNodeLinkFn = applyDirectivesToNode(directives, $compileNode, attrs, previousCompileContext);
@@ -634,11 +645,11 @@ export default function $CompileProvider($provide) {
                         throw 'Multiple directives asking for template';
                     }
                     templateDirective = directive;
-                    $compileNode.html(
-                        _.isFunction(directive.template) ?
-                        directive.template($compileNode, attrs) : 
-                        directive.template
-                        );
+                    let template = _.isFunction(directive.template) ?
+                                    directive.template($compileNode, attrs) :
+                                    directive.template;
+                    template = denormalizeTemplate(template);
+                    $compileNode.html(template);
                 }
                 if (directive.templateUrl) {
                     if (templateDirective) {
@@ -708,6 +719,7 @@ export default function $CompileProvider($provide) {
                         }
                     }
                     normalizedAttrName = directiveNormalize(name.toLowerCase());
+                    addAttrInterpolateDirective(directives, attr.value, normalizedAttrName);
                     addDirective(directives, normalizedAttrName, 'A', maxPriority,
                         attrStartName, attrEndName);
                     if (isNgAttr || !attrs.hasOwnProperty(normalizedAttrName)) {
@@ -737,9 +749,65 @@ export default function $CompileProvider($provide) {
                     }
                     
                 }
+            } else if (node.nodeType === Node.TEXT_NODE) {
+                addTextInterpolateDirective(directives, node.nodeValue);
             }
             directives.sort(byPriority);
             return directives;
+        }
+
+        function addAttrInterpolateDirective(directives, value, name) {
+            let interpolateFn = $interpolate(value, true);
+            if (interpolateFn) {
+                directives.push({
+                    priority: 100,
+                    compile: function() {
+                        return {
+                            pre: function link(scope, element, attrs) {
+                                if (/^(on[a-z]+|formaction)$/.test(name)) {
+                                    throw 'Interpolations for HTML DOM event attributes not allowed';
+                                }
+                                let newValue = attrs[name];
+                                if (newValue !== value) {
+                                    interpolateFn = newValue && $interpolate(newValue, true);
+                                }
+                                if (!interpolateFn) {
+                                    return;
+                                }
+
+                                attrs.$$observers = attrs.$$observers || {};
+                                attrs.$$observers[name] = attrs.$$observers[name] || [];
+                                attrs.$$observers[name].$$inter = true;
+
+                                attrs[name] = interpolateFn(scope);
+                                scope.$watch(interpolateFn, (newValue) => {
+                                    attrs.$set(name, newValue);
+                                });
+                            }
+                        };
+                    }
+                })
+            }
+        }
+
+        function addTextInterpolateDirective(directives, text) {
+            let interpolateFn = $interpolate(text, true);
+            if (interpolateFn) {
+                directives.push({
+                    priority: 0,
+                    compile: function() {
+                        return function link(scope, element) {
+                            let bindings = element.parent().data('$binding') || [];
+                            bindings = bindings.concat(interpolateFn.expressions);
+                            element.parent().data('$binding', bindings);
+                            element.parent().addClass('ng-binding');
+                            scope.$watch(interpolateFn, (newValue) => {
+                                element[0].nodeValue = newValue;
+                            });
+                        };
+                    }
+                });
+            }
         }
 
         function addDirective(directives, name, mode, maxPriority, attrStartName, attrEndName) {

@@ -10,6 +10,7 @@ import compile from 'compile';
 import controller from 'controller';
 import ngController from 'directives/ng_controller';
 import ngTransclude from 'directives/ng_transclude';
+import interpolate from 'interpolate';
 
 export default function publishExternalAPI() {
     setupModuleLoader(window);
@@ -28,4 +29,5 @@ export default function publishExternalAPI() {
     ngModule.provider('$controller', controller);
     ngModule.directive('ngController', ngController);
     ngModule.directive('ngTransclude', ngTransclude);
+    ngModule.provider('$interpolate', interpolate);
 }
