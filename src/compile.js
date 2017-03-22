@@ -1,8 +1,10 @@
 import _ from 'lodash';
 import $ from 'jquery';
+import {identifierForController} from 'controller';
 
 let PREFIX_REGEXP = /(x[\:\-_]|data[\:\-_])/i;
 let REQUIRE_PREFIX_REGEXP = /^(\^\^?)?(\?)?(\^\^?)?/;
+
 let BOOLEAN_ATTRS = {
     multiple: true,
     selected: true,
@@ -21,6 +23,9 @@ let BOOLEAN_ELEMENTS = {
     FORM: true,
     DETAILS: true
 };
+
+function UNINITIALIZED_VALUE() {}
+let _UNINITIALIZED_VALUE = new UNINITIALIZED_VALUE();
 
 function directiveNormalize(name) {
     return _.camelCase(name.replace(PREFIX_REGEXP, ''));
@@ -86,8 +91,41 @@ function getDirectiveRequire(directive, name) {
     return require;
 }
 
+function makeInjectable(template, $injector) {
+    if (_.isFunction(template) || _.isArray(template)) {
+        return function(element, attrs) {
+            return $injector.invoke(template, this, {
+                $element: element,
+                $attrs: attrs
+            });
+        }
+    } else {
+        return template;
+    }
+}
+
+class SimpleChange {
+    constructor(previous, current) {
+        this.previousValue = previous;
+        this.currentValue = current;
+    }
+    
+    isFirstChange() {
+        return this.previousValue === _UNINITIALIZED_VALUE;
+    }
+}   
+
 export default function $CompileProvider($provide) {
     let hasDirectives = {};
+    let TTL = 10;
+    
+    this.onChangesTtl = (value) => {
+        if (arguments.length) {
+            TTL = value;
+            return this;
+        }
+        return TTL;
+    }
     this.directive = function(name, directiveFactory) {
         if (_.isString(name)) {
             if (name === 'hasOwnProperty') {
@@ -120,8 +158,50 @@ export default function $CompileProvider($provide) {
         }
         
     };
+
+    this.component = function(name, options) {
+        function factory($injector) {
+            return {
+                restrict: 'E',
+                controller: options.controller,
+                controllerAs: options.controllerAs ||
+                                identifierForController(options.controller) ||
+                                '$ctrl',
+                scope: {},
+                bindToController: options.bindings || {},
+                template: makeInjectable(options.template, $injector),
+                templateUrl: makeInjectable(options.templateUrl, $injector),
+                transclude: options.transclude,
+                require: options.require
+            };
+        };
+
+        return this.directive(name, factory);
+    };
     
     this.$get = ['$injector', '$rootScope', '$parse', '$controller', '$http', '$interpolate', function($injector, $rootScope, $parse, $controller, $http, $interpolate) {
+
+        let onChangesQueue;
+        let onChangesTtl = TTL;
+
+        function flushOnChanges() {
+            try {
+                onChangesTtl--;
+                if (!onChangesTtl) {
+                    onChangesQueue = null;
+                    throw TTL + '$onChanges() iterations reached. Aborting!';
+                }
+                $rootScope.$apply(() => {
+                    _.forEach(onChangesQueue, (onChangesHook) => {
+                        onChangesHook();
+                    });
+                    onChangesQueue = null;
+                });
+            } finally {
+                onChangesTtl++;
+            }
+            
+        }
 
         let startSymbol = $interpolate.startSymbol();
         let endSymbol = $interpolate.endSymbol();
@@ -307,6 +387,34 @@ export default function $CompileProvider($provide) {
         }
 
         function initializeDirectiveBindings(scope, attrs, destination, bindings, newScope) {
+            let initialChanges = {};
+            let changes;
+
+            function recordChanges(key, currentValue, previousValue) {
+                if (destination.$onChanges && currentValue !== previousValue) {
+                    if (!onChangesQueue) {
+                        onChangesQueue = [];
+                        $rootScope.$$postDigest(flushOnChanges);
+                    }
+                    if (!changes) {
+                        changes = {};
+                        onChangesQueue.push(triggerOnChanges);
+                    }
+                    if (changes[key]) {
+                        previousValue = changes[key].previousValue;
+                    }
+                    changes[key] = new SimpleChange(previousValue, currentValue);
+                }
+            }
+
+            function triggerOnChanges() {
+                try {
+                    destination.$onChanges(changes);
+                } finally {
+                    changes = null;
+                }
+            }
+            
             _.forEach(bindings,
             (definition, scopeName) => {
                 let attrName = definition.attrName;
@@ -314,11 +422,14 @@ export default function $CompileProvider($provide) {
                 switch(definition.mode) {
                     case '@':
                         attrs.$observe(attrName, (newAttrValue) => {
+                            let oldValue = destination[scopeName];
                             destination[scopeName] = newAttrValue;
+                            recordChanges(scopeName, destination[scopeName], oldValue);
                         });
                         if (attrs[attrName]) {
                             destination[scopeName] = $interpolate(attrs[attrName])(scope);
                         }
+                        initialChanges[scopeName] = new SimpleChange(_UNINITIALIZED_VALUE, destination[scopeName]);
                         break;
                     case '<':
                         if (definition.optional && !attrs[attrName]) {
@@ -327,9 +438,12 @@ export default function $CompileProvider($provide) {
                         parentGet = $parse(attrs[attrName]);
                         destination[scopeName] = parentGet(scope); //scope is parent scope
                         unwatch = scope.$watch(parentGet, (newValue) => {
+                            let oldValue = destination[scopeName];
                             destination[scopeName] = newValue;
+                            recordChanges(scopeName, destination[scopeName], oldValue);
                         });
                         newScope.$on('$destroy', unwatch);
+                        initialChanges[scopeName] = new SimpleChange(_UNINITIALIZED_VALUE, destination[scopeName]);
                         break;
                     case '=':
                         if (definition.optional && !attrs[attrName]) {
@@ -369,6 +483,7 @@ export default function $CompileProvider($provide) {
                     }
                 }
             );
+            return initialChanges;
         }
 
         function applyDirectivesToNode(directives, compileNode, attrs, previousCompileContext) {
@@ -530,7 +645,7 @@ export default function $CompileProvider($provide) {
 
                 let scopeDirective = newIsolateScopeDirective || newScopeDirective;
                 if (scopeDirective && controllers[scopeDirective.name]) {
-                    initializeDirectiveBindings(
+                    controllers[scopeDirective.name].initialChanges = initializeDirectiveBindings(
                         scope,
                         attrs,
                         controllers[scopeDirective.name].instance,
@@ -550,6 +665,21 @@ export default function $CompileProvider($provide) {
                             let requiredControllers = getControllers(require, $element);
                             _.assign(controller, requiredControllers);
                         }
+                });
+
+                _.forEach(controllers, (controller) => {
+                    let controllerInstance = controller.instance;
+                    if (controllerInstance.$onInit) {
+                        controllerInstance.$onInit();
+                    }
+                    if (controllerInstance.$onChanges) {
+                        controllerInstance.$onChanges(controller.initialChanges);
+                    }
+                    if (controllerInstance.$onDestroy) {
+                        (newIsolateScopeDirective ? isolateScope : scope).$on('$destroy', () => {
+                            controllerInstance.$onDestroy();
+                        });
+                    }
                 });
 
                 function scopeBoundTranscludeFn(transcludedScope, cloneAttachFn) {
@@ -591,6 +721,13 @@ export default function $CompileProvider($provide) {
                         linkFn.require && getControllers(linkFn.require, $element),
                         scopeBoundTranscludeFn
                     );
+                });
+
+                _.forEach(controllers, (controller) => {
+                    let controllerInstance = controller.instance;
+                    if (controllerInstance.$postLink) {
+                        controllerInstance.$postLink();
+                    }
                 });
             }
 

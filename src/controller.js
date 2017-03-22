@@ -1,5 +1,7 @@
 import _ from 'lodash';
 
+let CNTRL_REG = /^(\S+)(\s+as\s+(\w+))?/;
+
 function addToScope(locals, identifier, instance) {
     if (locals && _.isObject(locals.$scope)) {
         locals.$scope[identifier] = instance;
@@ -8,7 +10,16 @@ function addToScope(locals, identifier, instance) {
     }
 }
 
-export default function $ControllerProvider() {
+function identifierForController(ctrl) {
+    if (_.isString(ctrl)) {
+        let match = CNTRL_REG.exec(ctrl);
+        if (match) {
+            return match[3];
+        }
+    }
+}
+
+function $ControllerProvider() {
     
     let controllers = {};
     let globals = false;
@@ -28,7 +39,7 @@ export default function $ControllerProvider() {
     this.$get = ['$injector', function($injector) {
         return function(ctrl, locals, later, identifier) {
             if (_.isString(ctrl)) {
-                let match = ctrl.match(/^(\S+)(\s+as\s+(\w+))?/);
+                let match = ctrl.match(CNTRL_REG);
                 ctrl = match[1];
                 identifier = identifier || match[3];
                 if (controllers.hasOwnProperty(ctrl)) {
@@ -63,3 +74,5 @@ export default function $ControllerProvider() {
         };
     }];
 }
+
+export {identifierForController, $ControllerProvider as default};

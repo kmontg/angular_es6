@@ -20,6 +20,12 @@ describe('$compile', function() {
     }]);
   }
 
+  function makeInjectorWithComponent(name, options) {
+    return createInjector(['ng', function($compileProvider) {
+      $compileProvider.component(name, options);
+    }]);
+  }
+
   it('allows creating directives', function() {
     var myModule = window.angular.module('myModule', []);
     myModule.directive('testing', function() { });
@@ -4059,23 +4065,691 @@ describe('$compile', function() {
     });
 
     it('denormalizes directive templates', function() {
-    var injector = createInjector(['ng', function($interpolateProvider, $compileProvider) {
-      $interpolateProvider.startSymbol('[[').endSymbol(']]');
-      $compileProvider.directive('myDirective', function() {
-        return {
-          template: 'Value is {{myExpr}}'
-        };
-      });
-    }]);
-    injector.invoke(function($compile, $rootScope) {
-      var el = $('<div my-directive></div>');
-      $rootScope.myExpr = 42;
-      $compile(el)($rootScope);
-      $rootScope.$apply();
+      var injector = createInjector(['ng', function($interpolateProvider, $compileProvider) {
+        $interpolateProvider.startSymbol('[[').endSymbol(']]');
+        $compileProvider.directive('myDirective', function() {
+          return {
+            template: 'Value is {{myExpr}}'
+          };
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<div my-directive></div>');
+        $rootScope.myExpr = 42;
+        $compile(el)($rootScope);
+        $rootScope.$apply();
 
-      expect(el.html()).toEqual('Value is 42');
+        expect(el.html()).toEqual('Value is 42');
+      });
     });
+
   });
+
+  describe('components', function() {
+
+    var xhr, requests;
+
+    beforeEach(function() {
+      xhr = sinon.useFakeXMLHttpRequest();
+      requests = [];
+      xhr.onCreate = function(req) {
+        requests.push(req);
+      };
+    });
+    afterEach(function() {
+      xhr.restore();
+    });
+
+    it('can be registered and become directives', function() {
+      var myModule = window.angular.module('myModule', []);
+      myModule.component('myComponent', {});
+      var injector = createInjector(['ng', 'myModule']);
+      expect(injector.has('myComponentDirective')).toBe(true);
+    });
+
+    it('are element directives with controllers', function() {
+      var controllerInstantiated = false;
+      var componentElement;
+      var injector = makeInjectorWithComponent('myComponent', {
+        controller: function($element) {
+          controllerInstantiated = true;
+          componentElement = $element;
+        }
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component></my-component>');
+        $compile(el)($rootScope);
+        expect(controllerInstantiated).toBe(true);
+        expect(el[0]).toBe(componentElement[0]);
+      });
+    });
+
+    it('cannot be applied to an attribute', function() {
+      var controllerInstantiated = false;
+      var injector = makeInjectorWithComponent('myComponent', {
+        restrict: 'A', // Will be ignored
+        controller: function() {
+          controllerInstantiated = true;
+        }
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<div my-component></div>');
+        $compile(el)($rootScope);
+        expect(controllerInstantiated).toBe(false);
+      });
+    });
+
+    it('has an isolate scope', function() {
+      var componentScope;
+      var injector = makeInjectorWithComponent('myComponent', {
+        controller: function($scope) {
+          componentScope = $scope;
+        }
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component></my-component>');
+        $compile(el)($rootScope);
+        expect(componentScope).not.toBe($rootScope);
+        expect(componentScope.$parent).toBe($rootScope);
+        expect(Object.getPrototypeOf(componentScope)).not.toBe($rootScope);
+      });
+    });
+
+    it('may have bindings which are attached to controller', function() {
+      var controllerInstance;
+      var injector = makeInjectorWithComponent('myComponent', {
+        bindings: {
+          attr: '@',
+          oneWay: '<',
+          twoWay: '='
+        },
+        controller: function() {
+          controllerInstance = this;
+        }
+      });
+      injector.invoke(function($compile, $rootScope) {
+        $rootScope.b = 42;
+        $rootScope.c = 43;
+        var el = $('<my-component attr="a", one-way="b", two-way="c"></my-component>');
+        $compile(el)($rootScope);
+
+        expect(controllerInstance.attr).toEqual('a');
+        expect(controllerInstance.oneWay).toEqual(42);
+        expect(controllerInstance.twoWay).toEqual(43);
+      });
+    });
+
+    it('may use a controller alias with controllerAs', function() {
+      var componentScope;
+      var controllerInstance;
+      var injector = makeInjectorWithComponent('myComponent', {
+        controller: function($scope) {
+          componentScope = $scope;
+          controllerInstance = this;
+        },
+        controllerAs: 'myComponentController'
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component></my-component>');
+        $compile(el)($rootScope);
+        expect(componentScope.myComponentController).toBe(controllerInstance);
+      });
+    });
+
+    it('may use a controller alias with "controller as" syntax', function() {
+      var componentScope;
+      var controllerInstance;
+      var injector = createInjector(['ng', function($controllerProvider, $compileProvider) {
+        $controllerProvider.register('MyController', function($scope) {
+          componentScope = $scope;
+          controllerInstance = this;
+        });
+        $compileProvider.component('myComponent', {
+          controller: 'MyController as myComponentController'
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component></my-component');
+        $compile(el)($rootScope);
+        expect(componentScope.myComponentController).toBe(controllerInstance);
+      });
+    });
+
+    it('has a default controller alias of $ctrl', function() {
+      var componentScope;
+      var controllerInstance;
+      var injector = makeInjectorWithComponent('myComponent', {
+        controller: function($scope) {
+          componentScope = $scope;
+          controllerInstance = this;
+        },
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component></my-component>');
+        $compile(el)($rootScope);
+        expect(componentScope.$ctrl).toBe(controllerInstance);
+      });
+    });
+
+    it('may have a template', function() {
+      var injector = makeInjectorWithComponent('myComponent', {
+        controller: function() {
+          this.message = 'Hello from component';
+        },
+        template: '{{ $ctrl.message }}'
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component></my-component>');
+        $compile(el)($rootScope);
+        $rootScope.$apply();
+        expect(el.text()).toEqual('Hello from component');
+      });
+    });
+
+    it('may have a templateUrl', function() {
+      var injector = makeInjectorWithComponent('myComponent', {
+        controller: function() {
+          this.message = 'Hello from component';
+        },
+        templateUrl: '/my_component.html'
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component></my-component>');
+        $compile(el)($rootScope);
+        $rootScope.$apply();
+        requests[0].respond(200, {}, '{{ $ctrl.message }}');
+        $rootScope.$apply();
+        expect(el.text()).toEqual('Hello from component');
+      });
+    });
+
+    it('may have a template function with DI support', function() {
+      var injector = createInjector(['ng', function($provide, $compileProvider) {
+        $provide.constant('myConstant', 42);
+        $compileProvider.component('myComponent', {
+          template: function(myConstant) {
+            return '' + myConstant;
+          }
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component></my-component>');
+        $compile(el)($rootScope);
+        expect(el.text()).toEqual('42');
+      });
+    });
+
+    it('may have a template function with array-wrapped DI', function() {
+      var injector = createInjector(['ng', function($provide, $compileProvider) {
+        $provide.constant('myConstant', 42);
+        $compileProvider.component('myComponent', {
+          template: ['myConstant', function(c) {
+            return '' + c;
+          }]
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component></my-component>');
+        $compile(el)($rootScope);
+        expect(el.text()).toEqual('42');
+      });
+    });
+
+    it('may inject $element and $attrs to template function', function() {
+      var injector = createInjector(['ng', function($provide, $compileProvider) {
+        $compileProvider.component('myComponent', {
+          template: function($element, $attrs) {
+            return $element.attr('copiedAttr', $attrs.myAttr);
+          }
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component my-attr="42"></my-component>');
+        $compile(el)($rootScope);
+        expect(el.attr('copiedAttr')).toEqual('42');
+      });
+    });
+
+    it('may have a template function with DI support', function() {
+      var injector = createInjector(['ng', function($provide, $compileProvider) {
+        $provide.constant('myConstant', 42);
+        $compileProvider.component('myComponent', {
+          templateUrl: function(myConstant) {
+            return '/template' + myConstant + ".html";
+          }
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component></my-component>');
+        $compile(el)($rootScope);
+        $rootScope.$apply();
+        expect(requests[0].url).toBe('/template42.html');
+      });
+    });
+
+    it('may use transclusion', function() {
+      var injector = makeInjectorWithComponent('myComponent', {
+        transclude: true,
+        template: '<div ng-transclude></div>'
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component>Transclude me</my-component>');
+        $compile(el)($rootScope);
+        expect(el.find('div').text()).toEqual('Transclude me');
+      });
+    });
+
+    it('may require other directive controllers', function() {
+      var secondControllerInstance;
+      var injector = createInjector(['ng', function($compileProvider) {
+        $compileProvider.component('first', {
+          controller: function() { }
+        });
+        $compileProvider.component('second', {
+          require: {first: '^'},
+          controller: function() {
+            secondControllerInstance = this;
+          }
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<first><second></second></first>');
+        $compile(el)($rootScope);
+        expect(secondControllerInstance.first).toBeDefined();
+      });
+    });
+
+  });
+
+  describe('lifecycle', function() {
+
+    it('calls $onInit after all ctrls created before linking', function() {
+      var invocations = [];
+      var injector = createInjector(['ng', function($compileProvider) {
+        $compileProvider.component('first', {
+          controller: function() {
+            invocations.push('first controller created');
+            this.$onInit = function() {
+              invocations.push('first controller $onInit');
+            };
+          }
+        });
+        $compileProvider.directive('second', function() {
+          return {
+            controller: function() {
+              invocations.push('second controller created');
+              this.$onInit = function() {
+                invocations.push('second controller $onInit');
+              };
+            },
+            link: {
+              pre: function() { invocations.push('second prelink'); },
+              post: function() { invocations.push('second postlink'); }
+            }
+          };
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<first second></first>');
+        $compile(el)($rootScope);
+        expect(invocations).toEqual([
+          'first controller created',
+          'second controller created',
+          'first controller $onInit',
+          'second controller $onInit',
+          'second prelink',
+          'second postlink'
+        ]);
+      });
+    });
+
+    it('calls $onDestroy when the scope is destroyed', function() {
+      var destroySpy = jasmine.createSpy();
+      var injector = makeInjectorWithComponent('myComponent', {
+        controller: function() {
+          this.$onDestroy = destroySpy;
+        }
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component></my-component>');
+        $compile(el)($rootScope);
+        $rootScope.$destroy();
+        expect(destroySpy).toHaveBeenCalled();
+      });
+    });
+
+    it('calls $postLink after all linking is done', function() {
+      var invocations = [];
+      var injector = createInjector(['ng', function($compileProvider) {
+        $compileProvider.component('first', {
+          controller: function() {
+            this.$postLink = function() {
+              invocations.push('first controller $postLink');
+            };
+          }
+        });
+        $compileProvider.directive('second', function() {
+          return {
+            controller: function() {
+              this.$postLink = function() {
+                invocations.push('second controller $postLink');
+              };
+            },
+            link: function() { invocations.push('second postlink'); }
+          };
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<first><second></second></first>');
+        $compile(el)($rootScope);
+        expect(invocations).toEqual([
+          'second postlink',
+          'second controller $postLink',
+          'first controller $postLink'
+        ]);
+      });
+    });
+
+    it('calls $onChanges with all bindings during init', function() {
+      var changesSpy = jasmine.createSpy();
+      var injector = makeInjectorWithComponent('myComponent', {
+        bindings: {
+          myBinding: '<',
+          myAttr: '@'
+        },
+        controller: function() {
+          this.$onChanges = changesSpy;
+        }
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component my-binding="42" my-attr="43"></my-component>');
+        $compile(el)($rootScope);
+        expect(changesSpy).toHaveBeenCalled();
+        var changes = changesSpy.calls.mostRecent().args[0];
+        expect(changes.myBinding.currentValue).toBe(42);
+        expect(changes.myBinding.isFirstChange()).toBe(true);
+        expect(changes.myAttr.currentValue).toBe('43');
+        expect(changes.myAttr.isFirstChange()).toBe(true);
+      });
+    });
+
+    it('does not call $onChanges for two-way bindings', function() {
+      var changesSpy = jasmine.createSpy();
+      var injector = makeInjectorWithComponent('myComponent', {
+        bindings: {
+          myBinding: '=',
+        },
+        controller: function() {
+          this.$onChanges = changesSpy;
+        }
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component my-binding="42"></my-component>');
+        $compile(el)($rootScope);
+        expect(changesSpy).toHaveBeenCalled();
+        expect(changesSpy.calls.mostRecent().args[0].myBinding).toBeUndefined();
+      });
+    });
+
+    it('calls $onChanges when binding changes', function() {
+      var changesSpy = jasmine.createSpy();
+      var injector = makeInjectorWithComponent('myComponent', {
+        bindings: {
+          myBinding: '<'
+        },
+        controller: function() {
+          this.$onChanges = changesSpy;
+        }
+      });
+      injector.invoke(function($compile, $rootScope) {
+        $rootScope.aValue = 42;
+        var el = $('<my-component my-binding="aValue"></my-component>');
+        $compile(el)($rootScope);
+        $rootScope.$apply();
+
+        expect(changesSpy.calls.count()).toBe(1);
+
+        $rootScope.aValue = 43;
+        $rootScope.$apply();
+        expect(changesSpy.calls.count()).toBe(2);
+
+        var lastChanges = changesSpy.calls.mostRecent().args[0];
+        expect(lastChanges.myBinding.currentValue).toBe(43);
+        expect(lastChanges.myBinding.previousValue).toBe(42);
+        expect(lastChanges.myBinding.isFirstChange()).toBe(false);
+      });
+    });
+
+    it('calls $onChanges when attribute changes', function() {
+      var changesSpy = jasmine.createSpy();
+      var attrs;
+      var injector = makeInjectorWithComponent('myComponent', {
+        bindings: {
+          myAttr: '@'
+        },
+        controller: function($attrs) {
+          this.$onChanges = changesSpy;
+          attrs = $attrs;
+        }
+      });
+      injector.invoke(function($compile, $rootScope) {
+        var el = $('<my-component my-attr="42"></my-component>');
+        $compile(el)($rootScope);
+        $rootScope.$apply();
+
+        expect(changesSpy.calls.count()).toBe(1);
+
+        attrs.$set('myAttr', '43');
+        $rootScope.$apply();
+        expect(changesSpy.calls.count()).toBe(2);
+
+        var lastChanges = changesSpy.calls.mostRecent().args[0];
+        expect(lastChanges.myAttr.currentValue).toBe('43');
+        expect(lastChanges.myAttr.previousValue).toBe('42');
+        expect(lastChanges.myAttr.isFirstChange()).toBe(false);
+      });
+    });
+
+    it('calls $onChanges once with multiple changes', function() {
+      var changesSpy = jasmine.createSpy();
+      var attrs;
+      var injector = makeInjectorWithComponent('myComponent', {
+        bindings: {
+          myBinding: '<',
+          myAttr: '@'
+        },
+        controller: function($attrs) {
+          this.$onChanges = changesSpy;
+          attrs = $attrs;
+        }
+      });
+      injector.invoke(function($compile, $rootScope) {
+        $rootScope.aValue = 42;
+        var el = $('<my-component my-binding="aValue" my-attr="fourtyTwo"></my-component>');
+        $compile(el)($rootScope);
+        $rootScope.$apply();
+
+        expect(changesSpy.calls.count()).toBe(1);
+
+        $rootScope.aValue = 43;
+        attrs.$set('myAttr', 'fourtyThree');
+        $rootScope.$apply();
+        expect(changesSpy.calls.count()).toBe(2);
+
+        var lastChanges = changesSpy.calls.mostRecent().args[0];
+        expect(lastChanges.myBinding.currentValue).toBe(43);
+        expect(lastChanges.myBinding.previousValue).toBe(42);
+        expect(lastChanges.myAttr.currentValue).toBe('fourtyThree');
+        expect(lastChanges.myAttr.previousValue).toBe('fourtyTwo');
+      });
+    });
+
+    it('runs $onChanges in a digest', function() {
+      var changesSpy = jasmine.createSpy();
+      var injector = makeInjectorWithComponent('myComponent', {
+        bindings: {
+          myBinding: '<'
+        },
+        controller: function() {
+          this.$onChanges = function() {
+            this.innerValue = 'myBinding is ' + this.myBinding;
+          };
+        },
+        template: '{{ $ctrl.innerValue }}'
+      });
+      injector.invoke(function($compile, $rootScope) {
+        $rootScope.aValue = 42;
+        var el = $('<my-component my-binding="aValue"></my-component>');
+        $compile(el)($rootScope);
+        $rootScope.$apply();
+
+        $rootScope.aValue = 43;
+        $rootScope.$apply();
+
+        expect(el.text()).toEqual('myBinding is 43');
+      });
+    });
+
+    it('keeps first value as previous for $onChanges when multiple changes', function() {
+      var changesSpy = jasmine.createSpy();
+      var injector = makeInjectorWithComponent('myComponent', {
+        bindings: {
+          myBinding: '<'
+        },
+        controller: function() {
+          this.$onChanges = changesSpy;
+        }
+      });
+      injector.invoke(function($compile, $rootScope) {
+        $rootScope.aValue = 42;
+        var el = $('<my-component my-binding="aValue"></my-component>');
+        $compile(el)($rootScope);
+        $rootScope.$apply();
+
+        $rootScope.aValue = 43;
+        $rootScope.$watch('aValue', function() {
+          if ($rootScope.aValue !== 44) {
+            $rootScope.aValue = 44;
+          }
+        });
+        $rootScope.$apply();
+        expect(changesSpy.calls.count()).toBe(2);
+
+        var lastChanges = changesSpy.calls.mostRecent().args[0];
+        expect(lastChanges.myBinding.currentValue).toBe(44);
+        expect(lastChanges.myBinding.previousValue).toBe(42);
+      });
+    });
+
+    it('runs $onChanges for all components in the same digest', function() {
+      var injector = createInjector(['ng', function($compileProvider) {
+        $compileProvider.component('first', {
+          bindings: {myBinding: '<'},
+          controller: function() {
+            this.$onChanges = function() { };
+          }
+        });
+        $compileProvider.component('second', {
+          bindings: {myBinding: '<'},
+          controller: function() {
+            this.$onChanges = function() { };
+          }
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var watchSpy = jasmine.createSpy();
+        $rootScope.$watch(watchSpy);
+
+        $rootScope.aValue = 42;
+        var el = $('<div>' +
+          '<first my-binding="aValue"></first>' +
+          '<second my-binding="aValue"></second>' +
+        '</div>');
+        $compile(el)($rootScope);
+        $rootScope.$apply();
+         // Dirty watches always cause a second digest
+        expect(watchSpy.calls.count()).toBe(2);
+
+        $rootScope.aValue = 43;
+        $rootScope.$apply();
+        // Two more because of dirty watches $apply here,
+        // plus one more for onchanges
+        expect(watchSpy.calls.count()).toBe(5);
+      });
+    });
+
+    it('has a TTL for $onChanges', function() {
+      var injector = createInjector(['ng', function($compileProvider) {
+        $compileProvider.component('myComponent', {
+          bindings: {
+            input: '<',
+            increment: '='
+          },
+          controller: function() {
+            this.$onChanges = function() {
+              if (this.increment) {
+                this.increment = this.increment + 1;
+              }
+            };
+          }
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var watchSpy = jasmine.createSpy();
+        $rootScope.$watch(watchSpy);
+
+        var el = $('<div>' +
+          '<my-component input="valueOne" increment="valueTwo"></my-component>' +
+          '<my-component input="valueTwo" increment="valueOne"></my-component>' +
+        '</div>');
+        $compile(el)($rootScope);
+        $rootScope.$apply();
+
+        $rootScope.valueOne = 42;
+        $rootScope.valueTwo = 42;
+        $rootScope.$apply();
+        expect($rootScope.valueOne).toBe(51);
+        expect($rootScope.valueTwo).toBe(51);
+      });
+    });
+
+    it('allows configuring $onChanges TTL', function() {
+      var injector = createInjector(['ng', function($compileProvider) {
+        $compileProvider.onChangesTtl(50);
+        $compileProvider.component('myComponent', {
+          bindings: {
+            input: '<',
+            increment: '='
+          },
+          controller: function() {
+            this.$onChanges = function() {
+              if (this.increment) {
+                this.increment = this.increment + 1;
+              }
+            };
+          }
+        });
+      }]);
+      injector.invoke(function($compile, $rootScope) {
+        var watchSpy = jasmine.createSpy();
+        $rootScope.$watch(watchSpy);
+
+        var el = $('<div>' +
+          '<my-component input="valueOne" increment="valueTwo"></my-component>' +
+          '<my-component input="valueTwo" increment="valueOne"></my-component>' +
+        '</div>');
+        $compile(el)($rootScope);
+        $rootScope.$apply();
+
+        $rootScope.valueOne = 42;
+        $rootScope.valueTwo = 42;
+        $rootScope.$apply();
+        expect($rootScope.valueOne).toBe(91);
+        expect($rootScope.valueTwo).toBe(91);
+      });
+    });
+
+
 
   });
 
