@@ -11,6 +11,7 @@ import controller from 'controller';
 import ngController from 'directives/ng_controller';
 import ngTransclude from 'directives/ng_transclude';
 import interpolate from 'interpolate';
+import ngClick from 'directives/ng_click';
 
 export default function publishExternalAPI() {
     setupModuleLoader(window);
@@ -30,4 +31,5 @@ export default function publishExternalAPI() {
     ngModule.directive('ngController', ngController);
     ngModule.directive('ngTransclude', ngTransclude);
     ngModule.provider('$interpolate', interpolate);
+    ngModule.directive('ngClick', ngClick);
 }
